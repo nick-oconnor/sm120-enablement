@@ -26,7 +26,7 @@ PSU output (self-reported via the PSU's USB interface): ~290W idle, ~1.4kW under
 | Motherboard | Gigabyte TRX50 AI TOP |
 | CPU | 1x AMD Ryzen Threadripper PRO 9985WX |
 | Memory | 8x Kingston KF556R28-32 RDIMM, EXPO 1 |
-| GPU | 4x NVIDIA RTX PRO 6000 Blackwell Max-Q |
+| GPU | 4x NVIDIA RTX PRO 6000 Blackwell Max-Q, ECC enabled |
 | Interconnect | 4x PCIe Gen 5 x16 |
 | PSU | 1x Corsair HX1500i, 20A 120V circuit |
 | OS / driver | Debian 13, kernel 6.12.94, NVIDIA 590.48.01, CUDA 13.1 |
