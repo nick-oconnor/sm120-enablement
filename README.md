@@ -121,6 +121,8 @@ docker run --rm --gpus all --ipc=host \
       --limit-mm-per-prompt '{"image":1,"video":0}'  # disable video support to enable full context length
 ```
 
-KV cache offloading to host RAM is intentionally disabled. Under TP/EP + async scheduling it deadlocks on long-context decode: KV block loads desync across ranks, the NCCL collective hangs (3 GPUs pegged, 1 idle), and all workers wedge on `async_copy_ready_event.synchronize()` in the kv-load-aware sample path until the engine RPC times out and EngineCore dies. The full 1M-token context already fits in GPU KV, so the offload is not needed for context length; it only helped concurrent long sequences exceeding GPU KV, which is not worth hard server deadlocks.
+---
+
+Operational deep-dive — build/deploy config, the full launch-blocker list, and production-incident post-mortems — lives in [`notes/`](notes/).
 
 
