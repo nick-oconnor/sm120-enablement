@@ -8,14 +8,14 @@ A workstation serving [MiniMax-M3](https://huggingface.co/nvidia/MiniMax-M3-NVFP
 
 ## Benchmarks
 
-16 prompts, concurrency 4.
+16 prompts, concurrency 4, per row.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | p50 TTFT  | p50 ITL  |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 216            | 938ms     | 15ms     |
-| 8192      | 1024       | 218            | 1894ms    | 16ms     |
-| 32768     | 4096       | 199            | 8383ms    | 17ms     |
-| 131072    | 8192       | 133            | 37617ms   | 22ms     |
+| 2048      | 256        | 259            | 154ms     | 15ms     |
+| 8192      | 1024       | 235            | 468ms     | 16ms     |
+| 32768     | 4096       | 199            | 7953ms    | 17ms     |
+| 131072    | 8192       | 132            | 36277ms   | 22ms     |
 
 PSU output (self-reported via the PSU's USB interface): ~290W idle, ~1.4kW under bench load, 1.64kW peak.
 
