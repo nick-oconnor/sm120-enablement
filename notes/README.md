@@ -45,7 +45,17 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
 
 - **Serving works**: full 1M context, fp8 KV + Triton attn + EP + flashinfer_cutlass
   NVFP4 MoE, tool calls + reasoning validated. See `serving-config.md`.
-- **KV offloading**: disabled — deadlocks. Not needed (1M fits in GPU KV).
-- **Open issue**: intermittent long-context crash (Xid 69). All hardware checks
-  (DCGM `-r 3`, ECC, PCIe Gen5, ASPM) are clean → next step is a
-  `CUDA_LAUNCH_BLOCKING=1` repro to pin the offending kernel.
+- **KV offloading**: disabled in production. **Patch available locally**
+  (`VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`, opt-in, off by default) — combines
+  stream-side ordering + a host-side `dist.barrier()` after `start_load_kv` to
+  prevent the TP/EP rank desync documented in `incident-kv-offload-deadlock.md`.
+  Offloading remains unused because 1M context fits in GPU KV at 0.97 util.
+- **Xid-69 crash**: open. Upstream candidate identified — **FlashInfer
+  `2c0d595f` (PR #3187)** adds `set_autotune_process_group()` which fixes the
+  same bug family (per-rank async autotune tactic pick → desync → illegal
+  kernel launch) on identical hardware (RTX PRO 6000 SM120, author's repro
+  box). Wire-up needed in vLLM warmup (~10 lines, try-import guarded). See
+  `incident-longcontext-xid69.md` for the full patch plan. Both pieces required:
+  confirm faulting site with `CUDA_LAUNCH_BLOCKING=1`, then bump FlashInfer
+  past `2c0d595f` and wire the setter in warmup.
+- All hardware checks (DCGM `-r 3`, ECC, PCIe Gen5, ASPM) remain clean.

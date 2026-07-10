@@ -72,12 +72,78 @@ it's not a naive overflow — the fault is subtler (e.g. `valid_blocks` vs the s
 buffer's `max_block`, a bitonic-merge indexing edge, or a different kernel in the
 same step). Don't guess without the launch-blocking/sanitizer attribution.
 
+## Upstream candidate fix (FlashInfer PR #3187, ranked the most plausible cause)
+
+**Strong match — same bug family as the KV-offload deadlock** (per-rank async
+decisions before TP/EP collectives), at a different code site. Pinned
+`flashinfer-ai/flashinfer` is `b5ac097e`; commit `2c0d595f` (Thanhhao, 2026-07-10,
+PR #3187) adds `set_autotune_process_group(group)` which `all_reduce`s measured
+kernel timings across a process group before the autotuner's `argmin` — every
+rank therefore picks the same tactic.
+
+Quoting the PR description verbatim, the failure mode:
+> *Different tactics chosen in step 1 produce different scratch shapes in step 2,
+> and `ncclCommWindowRegister` requires identical sizes across ranks or it
+> deadlocks.*
+
+This matches our incident shape exactly:
+1. `_topk_index_kernel` autotune runs per-rank with locally-measured timings →
+   different ranks may pick different configs under JIT/J-cache variance
+2. Next op (NCCL collective in MoE all-to-all, or the next Triton kernel in
+   attention) sees mismatched state on at least one rank
+3. Async CUDA error surfaces at the next `synchronize()` as
+   `cudaErrorLaunchFailure` → Xid 69
+
+Validation on hardware identical to ours: FlashInfer PR #3614 author explicitly
+ran the reproducer on *"This box is SM120 (RTX PRO 6000)"*.
+
+### Wire-up needed in vLLM (try-import guarded)
+
+```python
+from flashinfer.autotuner import set_autotune_process_group
+set_autotune_process_group(tp_group.cpu_group)   # gloo subgroup; safe
+try:
+    with autotune(True):
+        run_warmup_forwards()
+finally:
+    set_autotune_process_group(None)
+```
+
+Without the wire-up, bumping FlashInfer alone is half the fix. The wire-up is
+~10 lines around the warmup autotune block. Combined with a FlashInfer pin bump
+past `2c0d595f` (next release tag is `f2f9646e` v0.6.15), this is the path to
+turning the Xid-69 incident from "open" to "fixed."
+
+### Related FlashInfer fixes (newer than pin, take with the bump)
+
+| SHA | PR | What | Relevance |
+|---|---|---|---|
+| `2c0d595f` | #3187 | `set_autotune_process_group` | **primary fix for this incident** |
+| `59b1c4d7` | #3614 | MXFP8 cutlass MoE profiler autotune crash (null SF pointer) | defense in depth — same family, different kernel |
+| `596d1a06` | #3840 | fail loud on missing `(numExperts, topK)` routing tier | M3 (128/8) is covered; cheap insurance |
+| `ce52279d` | #3863 | clamp `CTA_TILE_Q` for SM120 99 KiB smem cap | not in topk path, but useful to know about SM120 limit |
+| `783914f9` | #3687 | autotuner memory leak | hygiene |
+
+### Why we still need CUDA_LAUNCH_BLOCKING attribution first
+
+PR #3187 fixes the autotune-tactic-divergence mechanism. The Xid-69 doc's
+"primacy suspicion" of `index_topk.py:_topk_index_kernel` is consistent with
+that mechanism but unproven — the crash is async, the launch-blocking/sanitizer
+attribution is what converts "plausible mechanism" into "confirmed site."
+Both pieces are needed: confirm the faulting site is in the autotune-affected
+path, then take PR #3187 to prevent it.
+
 ## Diagnostic playbook (for next time)
 - No host `dcgmi`/`py-spy`/`docker` on the node; containerd only. Runtimes:
   `crictl` (k8s.io namespace), `ctr`. GPU test images available:
   `registry.ocnr.org/infra/nvidia-devel`, the vllm image (has torch+CUDA).
-- **py-spy** (static binary, run as the pod's `vllm` user): dumps all workers —
-  the fastest way to see whether it's a collective deadlock vs a crash.
+- **`dump-jam-state.sh`** (pre-installed in the vllm image, writes to
+  `/home/vllm/jam-<UTC>-<hostshort>/`): py-spy dump for every vllm/EngineCore/
+  Worker PID + full `nvidia-smi` + per-GPU util + `/proc/<pid>/{cmdline,status,
+  wchan,stack}` + last 50 dmesg Xid/NVRM lines. The single command to run from
+  a jammed pod when you don't have time to remember the recipe — see
+  `vllm/tools/dump_jam_state.sh` and the FlashInfer pin bump in
+  `vllm/docker/Dockerfile`.
 - **Xid**: `sudo dmesg -T | grep -iE "xid|nvrm"`. Xid PCI address is the
   container-index-independent ground truth for *which physical card*.
   Timestamps: dmesg is local (PDT), container logs are UTC (−7h).
