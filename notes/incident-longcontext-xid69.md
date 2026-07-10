@@ -133,6 +133,35 @@ attribution is what converts "plausible mechanism" into "confirmed site."
 Both pieces are needed: confirm the faulting site is in the autotune-affected
 path, then take PR #3187 to prevent it.
 
+### ⚠ Caveat — does PR #3187 target the right autotuner?
+
+`_topk_index_kernel` is decorated with **Triton autotune** (`@triton.autotune`,
+`key=["BLOCK_SIZE_T"]` — `BLOCK_SIZE_T=next_power_of_2(topk)`, M3 default
+`sparse_topk_blocks=16` → BLOCK_SIZE_T=16), not FlashInfer autotune.
+
+PR #3187 syncs **FlashInfer's** autotuner only. Triton autotune is a separate
+subsystem with no equivalent process-group sync concept. If the actual
+faulting site is the Triton `_topk_index_kernel` autotune (and not just
+"the last console output before the async error surfaced"), PR #3187
+won't fix it — the symptom pattern matches but the mechanism is in the
+wrong autotuner.
+
+**Repro path to disambiguate:**
+1. Run with `CUDA_LAUNCH_BLOCKING=1` per the diagnostic playbook.
+2. If the faulting kernel reports as `index_topk.py:_topk_index_kernel` →
+   it's the Triton autotune; PR #3187 is not the right fix; we'd need
+   either (a) pre-warm + pin the Triton config, or (b) a Triton-side
+   sync (much harder — Triton has no `set_autotune_process_group`).
+3. If the faulting kernel reports as a FlashInfer MoE op
+   (`trtllm_fp4_block_scale_moe`, `cutlass_fused_moe`, etc.) → PR #3187
+   is the right fix.
+
+Until (1)-(3) are done, this is *necessary but unproven* mitigation.
+PR #3187 still has value (it's the right fix for the FlashInfer autotune
+case which is the more likely root cause per the incident shape — async
+error after a tuning pass), but it should be treated as "applied because
+the shape matches, not because we've confirmed the site."
+
 ## Diagnostic playbook (for next time)
 - No host `dcgmi`/`py-spy`/`docker` on the node; containerd only. Runtimes:
   `crictl` (k8s.io namespace), `ctr`. GPU test images available:
