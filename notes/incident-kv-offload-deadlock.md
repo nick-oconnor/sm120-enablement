@@ -1,4 +1,13 @@
-# Incident: KV-offloading deadlock at long context — RESOLVED
+# Incident: KV-offloading deadlock at long context — RESOLVED, fix deployed
+
+## Status
+
+| Date | Event |
+| --- | --- |
+| 2026-07-03 | Offload flags deployed (`33f5a354`); deadlock fires within hours at ~166K tokens |
+| 2026-07-03 | Offload flags removed (`d9736d40`); 1M-context fits in GPU KV, so offload wasn't needed anyway |
+| 2026-07-10 | Local fix landed in `infra/vllm` fork (`f256368d`-era commits, see "Patch" below): stream-side ordering + TP barrier in `OffloadingConnector.start_load_kv`, gated behind `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1` |
+| 2026-07-11 | Offload flags re-enabled + barrier env var set in production (`k8s-gitops` `56d81ffc`); awaiting long-context load to validate |
 
 ## Symptom
 Random inference **hangs** that did not self-recover and required a manual pod
@@ -13,8 +22,7 @@ shm_broadcast: No available shared memory broadcast block found in 60 seconds
 ```
 
 ## Trigger
-Enabled by the k8s-gitops commit *"vllm: enable KV cache offloading to host RAM"*,
-which added:
+Originally enabled by the k8s-gitops commit *"vllm: enable KV cache offloading to host RAM"* (`33f5a354`), which added:
 ```
 --kv-offloading-size 100
 --kv-offloading-backend native
@@ -36,71 +44,55 @@ ranks**; the ranks desync and a collective deadlocks.
 - `nvidia-smi`: GPUs 0/2/3 at **100%** (spinning in an NCCL collective), GPU 1 at
   **0%** (diverged — never entered it). Classic one-rank-desync deadlock.
 
-## Fix
-Removed both flags. Commits:
-- k8s-gitops `stage3/apps/vllm.yaml` — `d9736d40` (reverts the offloading change)
-- sm120-enablement README — `4b89c07`
+## Fix (deployed 2026-07-11)
 
-## Why disabling is the right call (not just a workaround)
+The offload flags are back on, paired with `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`
+in `stage3/apps/vllm.yaml` (`k8s-gitops` `56d81ffc`). The barrier is the
+opt-in part of the patch; without it, the flags alone re-trigger the deadlock.
+Image bump: `4dfecc7...` → `9b61dbd...`.
+
+Validation status: **pending**. The re-enabled offload buffer hasn't been
+exercised yet (live traffic has been ≤131K tokens; offload triggers only
+above the GPU KV budget, currently 1.14M tokens at 0.97 util). Need to drive
+a single >200K-token request through the live pod and confirm no hang. Use
+`dump-jam-state.sh` if it jams — that script is pre-installed in the vllm
+image (`/usr/local/bin/dump-jam-state.sh`, writes to `/home/vllm/jam-*/`).
+
+## Why disabling was the right call at the time
 - The **full 1M context already fits in GPU KV** (1,136,384 tokens at 0.97 util),
   so offloading buys nothing for single long conversations (the real workload).
 - It only helped *concurrent* long sequences whose combined KV exceeds aggregate
   GPU KV — not worth a class of hangs that hard-kill the engine.
 
 ## Is there a code fix?
-Not in upstream vLLM as of the current fork pin. Upstream #45388 (closed) / open
-PR #45406 target a *scheduler* deadlock under KV-cache **pressure** (multi-request
-queue-head starvation) — a **different** failure than our single-request,
-long-context, worker-collective desync. vLLM PR #44560 (`3b3d5287f`, "Resolve
-multiple async kv load deadlock") fixed the *admission-control wedge* (two async
-loads together consuming all blocks; neither can complete) — also a different
-failure. As of 2026-07, no upstream vLLM commit addresses our TP/EP-rank desync.
+Yes — landed in the `infra/vllm` fork on 2026-07-10. Two composable shapes,
+both gated behind the same `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1` env var:
 
-A real fix has to make KV-load completion a **collective** decision: all ranks
-agree they have finished loading before any rank enters the forward's TP/EP
-collectives. Two composable shapes, both proposed in incident-doc history:
+1. **Stream-side ordering** — in `vllm/v1/kv_offload/cpu/gpu_worker.py`, after
+   each CPU→GPU load's `end_event` on the dedicated transfer stream,
+   `compute_stream.wait_event(end_event)` so subsequent compute ops
+   (attention reads, collectives) are auto-ordered after the load on this
+   rank. Fixes in-rank ordering.
+2. **Collective barrier** — `OffloadingConnector.start_load_kv` calls
+   `wait_for_pending_loads()` (new on `OffloadingConnectorWorker`, blocks on
+   this rank's load events) then `tp_group.barrier()` -- all ranks enter
+   the forward together. Fixes cross-rank desync.
 
-1. **Stream-side ordering** — record the load's `end_event` on the
-   compute/NCCL stream so the forward's collectives are automatically ordered
-   after the load by CUDA's stream graph. Fixes in-rank ordering but does not
-   cross-rank desync.
-2. **Collective barrier** — `start_load_kv` blocks on each rank's local load
-   events, then a host-side `dist.barrier()` (or `all_reduce(empty)`) gates the
-   forward. Adds ~10–20 µs/step but eliminates the desync.
+Both are needed: (1) alone doesn't fix the desync; (2) alone would need
+the host-side load sync anyway. Cost is one ~10-20us barrier per step
+when sync is enabled; zero when disabled.
 
-Either alone is insufficient; **(1)+(2) together** is the actual fix. This is the
-same shape as FlashInfer PR #3187's `set_autotune_process_group` for the Xid-69
-autotune crash (same bug family — per-rank async decisions before collectives).
+This is the same shape as FlashInfer PR #3187's `set_autotune_process_group`
+for the Xid-69 autotune crash (same bug family — per-rank async decisions
+before collectives).
 
-## Patch (implemented locally, not yet deployed)
-
-`VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1` opt-in env var, off by default, lives in
-`vllm/distributed/kv_transfer/kv_connector/v1/offloading_connector.py` (barrier
-side) and `vllm/v1/kv offload/cpu/gpu_worker.py` (stream side). The barrier waits
-on this rank's load events via `OffloadingConnectorWorker.wait_for_pending_loads()`
-(added on `_load_jobs`), then `dist.barrier()` on the default group before
-returning from `start_load_kv`. The stream-side change makes the CPU→GPU
-load's `end_event` visible to the compute stream (`current_stream().wait_event`)
-so subsequent ops — including collectives — are ordered after the load on this
-rank.
-
-Validation path:
-- The offloading connector is disabled in production (1M context fits in GPU
-  KV at 0.97 util, so offloading is unused). The patch is unreachable without
-  re-enabling `--kv-offloading-size`.
-- To test: spin up a vllm pod with `--kv-offloading-size 1 --kv-offloading-backend
-  native --enable-async-output-processing`, drive a single >100K-token request,
-  and confirm no hang at 100–200K tokens (the failure window).
-- No commit needed until validation passes on SM120 with a long-context request.
-
-## Why we kept offloading off in production (status quo)
-- The **full 1M context already fits in GPU KV** (1,136,384 tokens at 0.97 util),
-  so offloading buys nothing for single long conversations (the real workload).
-- It only helped *concurrent* long sequences whose combined KV exceeds aggregate
-  GPU KV — not worth a class of hangs that hard-kill the engine.
-- The local patch turns the failure mode from "guaranteed hang" to "untested
-  throughput regression" — which is a much better trade, but still needs
-  validation before flipping the production flag.
+## Upstream status
+No upstream vLLM commit addresses our TP/EP-rank desync. Upstream PR #45388
+(closed) / open PR #45406 target a *scheduler* deadlock under KV-cache
+**pressure** (multi-request queue-head starvation) — a different failure.
+vLLM PR #44560 (`3b3d5287f`, "Resolve multiple async kv load deadlock")
+fixed the *admission-control wedge* (two async loads together consuming all
+blocks; neither can complete) — also a different failure.
 
 ## Caveat / relationship to the Xid-69 incident
 Both this hang and the later Xid-69 crash localized to **rank 1 / GPU 1**. We

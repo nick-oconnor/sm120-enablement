@@ -8,16 +8,17 @@ A workstation serving [MiniMax-M3](https://huggingface.co/nvidia/MiniMax-M3-NVFP
 
 ## Benchmarks
 
-16 prompts, concurrency 4, per row.
+16 prompts, concurrency 4, per row. Latest run: `vllm-bench-manual-spawn-mrgp4u5q-26a8e-q4tvc`, 2026-07-11 18:27-18:51 UTC, against image `9b61dbd...` (FlashInfer pin bump past PR #3187 + autotune + KV-offload patches). ECC enabled. KV offloading enabled (`--kv-offloading-size 100 --kv-offloading-backend native`); offload buffer idle at this size range (max 8K context × 4 = ~131K tokens = ~3.2 GB GPU KV per rank at full concurrency, well under the auto-fit 1.14M KV cache budget, so no offloads triggered during the bench).
 
-| Input Tokens | Output Tokens | Decode (tok/s) | p50 TTFT  | p50 ITL  |
-| --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 259            | 154ms     | 15ms     |
-| 8192      | 1024       | 235            | 468ms     | 16ms     |
-| 32768     | 4096       | 199            | 7953ms    | 17ms     |
-| 131072    | 8192       | 132            | 36277ms   | 22ms     |
+| Input Tokens | Output Tokens | Decode (tok/s) | p50 TTFT  | p50 ITL  | p99 ITL  | p50 TPOT | Total tok/s |
+| --------- | ---------- | -------------- | --------- | -------- | -------- | -------- | ----------- |
+| 2048      | 256        | 259.60         | 158ms     | 14.91ms  | 30.52ms  | 14.86ms  | 2514.83     |
+| 8192      | 1024       | 243.55         | 174ms     | 15.72ms  | 32.01ms  | 15.65ms  | 2233.80     |
+| 32768     | 4096       | 199.14         | 8448ms    | 17.24ms  | 34.91ms  | 18.00ms  | 1800.79     |
+| 131072    | 8192       | 132.72         | 38495ms   | 22.04ms  | 44.42ms  | 25.84ms  | 2259.09     |
 
-PSU output (self-reported via the PSU's USB interface): ~290W idle, ~1.4kW under bench load, 1.64kW peak.
+PSU output (self-reported via the PSU's USB interface, sampled at 1 min from `corsairpsu_power_total_watt`):
+~280W idle, ~1.4-1.5 kW sustained under bench load (peak ~1.71 kW during the 128K run at 18:40 UTC).
 
 ## Hardware
 
@@ -98,6 +99,8 @@ docker run --rm --gpus all --ipc=host \
   -e NCCL_P2P_LEVEL=NODE \  # NCCL can't auto-detect P2P from inside the container; declare it manually
   -e RAYON_NUM_THREADS=4 \  # cap the Rayon thread pool (used by tokenizers/parquet)
   -e MAX_JOBS=32 \  # cap JIT parallelism so container PIDs stay sane
+  -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \  # Xid-69 fix: sync FlashInfer autotune tactic choice across TP ranks (PR #3187). Forces all ranks into the autotune context during warmup.
+  -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \  # KV-offload deadlock fix: barrier + stream-side ordering after OffloadingConnector.start_load_kv (TP rank-desync deadlock). Required because --kv-offloading-size is set.
   vllm:0.24.0-sm120-cu131 \
     /models/nvidia/MiniMax-M3-NVFP4 \
       --served-model-name MiniMax-M3-NVFP4 \
@@ -108,8 +111,10 @@ docker run --rm --gpus all --ipc=host \
       --max-model-len auto \  # resolves to 1048576 at startup; the GPU KV cache is 1,136,384 tokens (31.71 GiB) so the full 1M context fits with ~87k tokens of headroom
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.97 \  # 58.59 GiB/shard weights; with fp8 KV at 1M-token context the budget is ~17 GiB/shard
+      --gpu-memory-utilization 0.97 \  # 58.59 GiB/shard weights; with fp8 KV at 1M-token context the budget is ~17 GiB/shard. GDDR7 ECC on RTX PRO 6000 has always-on on-die ECC (the nvidia-smi toggle is for SRAM/registers, not DRAM); KV cache size is unchanged across the ECC enable/disable window — `vllm:cache_config_info{kv_cache_size_tokens}=1136384` was constant.
       --kv-cache-dtype fp8 \
+      --kv-offloading-size 100 \  # 100 GiB host-RAM offload buffer; opt-in, was disabled 2026-07 due to the rank-desync deadlock (notes/incident-kv-offload-deadlock.md); re-enabled with VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER
+      --kv-offloading-backend native
       --attention-backend TRITON_ATTN \  # FlashAttn's fp8 path needs SM90/Hopper; FlashInfer then caps block sizes at 64 on SM120; M3 sparse requires exactly 128; Triton reconciles both
       --moe-backend flashinfer_cutlass \  # only NVFP4 MoE backend on SM120 that actually applies M3's SWIGLUOAI_UNINTERLEAVE clamp; TRTL-LM maps to plain Swiglu and silently drops the bias params
       --block-size 128 \  # M3 sparse attention requires it

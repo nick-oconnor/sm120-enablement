@@ -162,6 +162,24 @@ case which is the more likely root cause per the incident shape — async
 error after a tuning pass), but it should be treated as "applied because
 the shape matches, not because we've confirmed the site."
 
+## Status
+
+| Date | Event |
+| --- | --- |
+| 2026-07 | Incident doc drafted, both CPU/GPU diagnostic candidates noted |
+| 2026-07-10 | FlashInfer pin bump past PR #3187 landed in `infra/vllm` (`1b5da749b`) |
+| 2026-07-10 | VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP wire-up in warmup landed (`f256368d0`); forces all ranks into the autotune context so the all-reduce in `_profile_single_kernel` doesn't deadlock on missing peers |
+| 2026-07-10 | Image rebuilt and pushed to registry (`9b61dbd...`) |
+| 2026-07-11 | Env var set in `stage3/apps/vllm.yaml` (`56d81ffc`); currently opt-in active in production |
+| Pending | `CUDA_LAUNCH_BLOCKING=1` repro to pin the actual faulting kernel |
+
+Status: **fix candidate deployed, attribution pending**. Since 2026-07-11
+the env var is on in production; no Xid-69 has fired on the new build as
+of 2026-07-11 19:00 UTC. If the incident doesn't recur on long-context
+workloads, that's evidence the fix is right; if it recurs with
+`vllm:num_requests_waiting > 0` and `nvidia-smi` showing 3×100% + 1×0%,
+it's the Triton path and we need the listener implementation.
+
 ## Diagnostic playbook (for next time)
 - No host `dcgmi`/`py-spy`/`docker` on the node; containerd only. Runtimes:
   `crictl` (k8s.io namespace), `ctr`. GPU test images available:

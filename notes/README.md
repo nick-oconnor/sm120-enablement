@@ -36,26 +36,26 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
   reasoning) needed to serve M3 NVFP4 on SM120.
 - [`incident-kv-offload-deadlock.md`](incident-kv-offload-deadlock.md) — host-RAM
   KV offloading deadlocks at long context under TP/EP + async scheduling.
-  **Resolved** by disabling offloading.
+  **Resolved** by stream-side ordering + TP barrier in `OffloadingConnector`;
+  offload flags re-enabled in production 2026-07-11.
 - [`incident-longcontext-xid69.md`](incident-longcontext-xid69.md) — hard CUDA
   `unspecified launch failure` (Xid 69) on long-context requests. Hardware
-  fully eliminated; **open**, pointing at a software kernel path on rank 1.
+  fully eliminated; **open**, pointing at a software kernel path. Fix candidate
+  (FlashInfer PR #3187 sync) deployed 2026-07-11; attribution repro
+  (`CUDA_LAUNCH_BLOCKING=1`) still required to confirm site.
 
 ## TL;DR current status
 
 - **Serving works**: full 1M context, fp8 KV + Triton attn + EP + flashinfer_cutlass
   NVFP4 MoE, tool calls + reasoning validated. See `serving-config.md`.
-- **KV offloading**: disabled in production. **Patch available locally**
-  (`VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`, opt-in, off by default) — combines
-  stream-side ordering + a host-side `dist.barrier()` after `start_load_kv` to
-  prevent the TP/EP rank desync documented in `incident-kv-offload-deadlock.md`.
-  Offloading remains unused because 1M context fits in GPU KV at 0.97 util.
-- **Xid-69 crash**: open. Upstream candidate identified — **FlashInfer
-  `2c0d595f` (PR #3187)** adds `set_autotune_process_group()` which fixes the
-  same bug family (per-rank async autotune tactic pick → desync → illegal
-  kernel launch) on identical hardware (RTX PRO 6000 SM120, author's repro
-  box). Wire-up needed in vLLM warmup (~10 lines, try-import guarded). See
-  `incident-longcontext-xid69.md` for the full patch plan. Both pieces required:
-  confirm faulting site with `CUDA_LAUNCH_BLOCKING=1`, then bump FlashInfer
-  past `2c0d595f` and wire the setter in warmup.
+- **KV offloading**: **deployed**. Offload flags re-enabled in
+  `stage3/apps/vllm.yaml` (`56d81ffc`, 2026-07-11) with the rank-desync
+  fix activated via `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`. See
+  `incident-kv-offload-deadlock.md` for the timeline and validation status.
+- **Xid-69 crash**: open — **fix candidate deployed**. FlashInfer pin past
+  PR #3187 (`2c0d595f`) + `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1` wire-up
+  shipped 2026-07-10/11. Caveat: only addresses the FlashInfer-autotune
+  failure path; the Triton `_topk_index_kernel` path remains unaddressed.
+  Repro (CUDA_LAUNCH_BLOCKING=1) still required to confirm which autotuner
+  is the actual fault site. See `incident-longcontext-xid69.md`.
 - All hardware checks (DCGM `-r 3`, ECC, PCIe Gen5, ASPM) remain clean.
