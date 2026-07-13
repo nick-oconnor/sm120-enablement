@@ -1,4 +1,4 @@
-# Incident: v0.25.1 upgrade crash — MiniMax-M3 sparse-attn indexer (PR #47502) — RESOLVED
+# Incident: v0.25.1 crash — MiniMax-M3 sparse-attn indexer (PR #47502) — RESOLVED, deployed
 
 ## Status
 
@@ -7,8 +7,10 @@
 | 2026-07-12 | Rebased the fork onto upstream `v0.25.1` (branch `next`, `0.25.1+sm120.cu131`). Boots clean, then crashes on the first real batched prefill in the NVFP4 MoE `gemm2`. |
 | 2026-07-13 | Rolled production back to the working `0.24.0` build. Ruled out deps, rebase corruption, stale JIT cache, FlashInfer autotune, and PR #47631. |
 | 2026-07-13 | Root-caused by local `docker` A/B bisection to upstream **PR #47502**; reverted on `next` (`7a94c181a`). Validated: same repro that crashed every time now serves 22+ concurrent requests clean. |
+| 2026-07-13 | `0.25.1` rebuilt with the revert and **deployed as current production** (`k8s-gitops` "Retry 0.25.1 with a new build", image `0.25.1-sm120-cu131@sha256:cd76d568…`). |
 
-Production stayed on `0.24.0` throughout; `next`/`0.25.1` was an in-progress upgrade.
+Production was rolled back to `0.24.0` during the investigation; after the fix,
+`0.25.1` (with this revert) was built and deployed as current production.
 
 ## Symptom
 `next` (`0.25.1+sm120.cu131`) starts **cleanly** — model loads `modelopt_mixed`

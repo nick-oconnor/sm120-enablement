@@ -82,10 +82,10 @@ Build constraints:
 ```bash
 git clone https://github.com/nick-oconnor/vllm.git
 cd vllm
-docker build -f docker/Dockerfile -t vllm:0.24.0-sm120-cu131 .
+docker build -f docker/Dockerfile -t vllm:0.25.1-sm120-cu131 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.24.0-sm120-cu131](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.24.0-sm120-cu131).
+Pre-built amd64 image: [ngpitt/vllm:0.25.1-sm120-cu131](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.25.1-sm120-cu131).
 
 ## vLLM Execution
 
@@ -100,7 +100,7 @@ docker run --rm --gpus all --ipc=host \
   -e MAX_JOBS=32 \  # cap JIT parallelism so container PIDs stay sane
   -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \  # sync FlashInfer autotune tactic choice across TP ranks during warmup
   -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \  # host-side barrier after OffloadingConnector.start_load_kv to prevent the TP rank desync on KV load
-  vllm:0.24.0-sm120-cu131 \
+  vllm:0.25.1-sm120-cu131 \
     /models/nvidia/MiniMax-M3-NVFP4 \
       --served-model-name MiniMax-M3-NVFP4 \
       --tensor-parallel-size 4 \  # 4-way TP across the four GPUs

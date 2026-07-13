@@ -13,7 +13,7 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
 | Interconnect | **PCIe 5.0 only — no NVLink** (custom all-reduce auto-disabled → PYNCCL) |
 | Board | Gigabyte **TRX50 AI TOP**, AMD Threadripper |
 | Driver / CUDA | 590.48.01 / CUDA 13.1 |
-| vLLM | fork `registry.ocnr.org/infra/vllm`, version `0.24.0+sm120.cu131` |
+| vLLM | fork `registry.ocnr.org/infra/vllm`, version `0.25.1+sm120.cu131` |
 | Model | `nvidia/MiniMax-M3-NVFP4` — VL, `MiniMaxM3SparseForConditionalGeneration`, MIXED_PRECISION (NVFP4 experts + MXFP8), 128 experts, block-sparse attention + lightning indexer, 1,048,576 max context |
 
 ### GPU ↔ PCI ↔ physical slot map
@@ -52,13 +52,12 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
 
 ## TL;DR current status
 
-- **Serving works** (on `0.24.0`, current production): full 1M context, fp8 KV +
-  Triton attn + EP + flashinfer_cutlass NVFP4 MoE, tool calls + reasoning
-  validated. See `serving-config.md`.
-- **`v0.25.1` upgrade** (`next`): blocked then **fixed**. Upstream PR #47502 (M3
-  sparse-attn indexer) crashed multi-sequence prefills in the NVFP4 MoE `gemm2`;
-  reverted on `next` and validated locally (22+ concurrent, clean). Not yet
-  deployed. See `incident-v0251-sparse-attn-regression.md`.
+- **Serving works**: full 1M context, fp8 KV + Triton attn + EP + flashinfer_cutlass
+  NVFP4 MoE, tool calls + reasoning validated. See `serving-config.md`.
+- **Current production = `0.25.1`** (fork `next` branch). The `0.24.0`→`0.25.1`
+  upgrade first crashed multi-sequence prefills in the NVFP4 MoE `gemm2`; root
+  cause was upstream PR #47502 (M3 sparse-attn indexer), **reverted** on `next`
+  and now deployed. See `incident-v0251-sparse-attn-regression.md`.
 - **KV offloading**: **deployed**. Offload flags re-enabled in
   `stage3/apps/vllm.yaml` (`56d81ffc`, 2026-07-11) with the rank-desync
   fix activated via `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`. See

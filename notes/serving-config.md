@@ -73,7 +73,7 @@ auto-fit KV line; drop util to ~0.95 if boot gets tight.
 
 ## Build image
 
-`registry.ocnr.org/infra/vllm:0.24.0-sm120-cu131` — CUDA 13.1.1, Ubuntu 24.04,
+`registry.ocnr.org/infra/vllm:0.25.1-sm120-cu131` — CUDA 13.1.1, Ubuntu 24.04,
 arch list `12.0`, CUTLASS pinned to HEAD `e8ecfad` (`GIT_SHALLOW FALSE`, commit
 hash can't shallow-fetch), FlashInfer built from source (jit-cache wheel lacks
 SM120 kernels), `cuda-nvrtc-dev` added.
