@@ -43,11 +43,22 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
   fully eliminated; **open**, pointing at a software kernel path. Fix candidate
   (FlashInfer PR #3187 sync) deployed 2026-07-11; attribution repro
   (`CUDA_LAUNCH_BLOCKING=1`) still required to confirm site.
+- [`incident-v0251-sparse-attn-regression.md`](incident-v0251-sparse-attn-regression.md) —
+  the `v0.25.1` upgrade (`next`) crashes on the first multi-sequence prefill in
+  the NVFP4 MoE `gemm2` (null-pointer TMA descriptor, CUDA 700). **Resolved** —
+  root-caused by local docker bisection to upstream **PR #47502** (M3 sparse-attn
+  indexer / token-major `topk_indices_buffer`); reverted on `next`. The MoE crash
+  was a downstream report; corruption originated in the sparse-attention indexer.
 
 ## TL;DR current status
 
-- **Serving works**: full 1M context, fp8 KV + Triton attn + EP + flashinfer_cutlass
-  NVFP4 MoE, tool calls + reasoning validated. See `serving-config.md`.
+- **Serving works** (on `0.24.0`, current production): full 1M context, fp8 KV +
+  Triton attn + EP + flashinfer_cutlass NVFP4 MoE, tool calls + reasoning
+  validated. See `serving-config.md`.
+- **`v0.25.1` upgrade** (`next`): blocked then **fixed**. Upstream PR #47502 (M3
+  sparse-attn indexer) crashed multi-sequence prefills in the NVFP4 MoE `gemm2`;
+  reverted on `next` and validated locally (22+ concurrent, clean). Not yet
+  deployed. See `incident-v0251-sparse-attn-regression.md`.
 - **KV offloading**: **deployed**. Offload flags re-enabled in
   `stage3/apps/vllm.yaml` (`56d81ffc`, 2026-07-11) with the rank-desync
   fix activated via `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`. See
