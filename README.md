@@ -80,7 +80,7 @@ Build constraints:
   image, or the server fails to boot.
 
 ```bash
-git clone https://github.com/nick-oconnor/vllm.git
+git clone --branch 0.25 https://github.com/nick-oconnor/vllm.git
 cd vllm
 docker build -f docker/Dockerfile -t vllm:0.25.1-sm120-cu131 .
 ```
