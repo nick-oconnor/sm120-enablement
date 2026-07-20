@@ -29,7 +29,7 @@ PSU output (self-reported via the PSU's USB interface): ~280W idle, ~1.5kW under
 | GPU | 4x NVIDIA RTX PRO 6000 Blackwell Max-Q, ECC enabled |
 | Interconnect | 4x PCIe Gen 5 x16 |
 | PSU | 1x Corsair HX1500i, 20A 120V circuit |
-| OS / driver | Debian 13, kernel 6.12.94, NVIDIA 590.48.01, CUDA 13.1 |
+| OS / driver | Debian 13, kernel 6.12.95, NVIDIA 610.43.02, CUDA 13.3 |
 
 Memory Bandwidth:
 
@@ -82,10 +82,10 @@ Build constraints:
 ```bash
 git clone --branch 0.25 https://github.com/nick-oconnor/vllm.git
 cd vllm
-docker build -f docker/Dockerfile -t vllm:0.25.1-sm120-cu131 .
+docker build -f docker/Dockerfile -t vllm:0.25.1-sm120-cu133 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.25.1-sm120-cu131](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.25.1-sm120-cu131).
+Pre-built amd64 image: [ngpitt/vllm:0.25.1-sm120-cu133](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.25.1-sm120-cu133).
 
 ## vLLM Execution
 
@@ -100,7 +100,7 @@ docker run --rm --gpus all --ipc=host \
   -e MAX_JOBS=32 \  # cap JIT parallelism so container PIDs stay sane
   -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \  # sync FlashInfer autotune tactic choice across TP ranks during warmup
   -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \  # host-side barrier after OffloadingConnector.start_load_kv to prevent the TP rank desync on KV load
-  vllm:0.25.1-sm120-cu131 \
+  vllm:0.25.1-sm120-cu133 \
     /models/nvidia/MiniMax-M3-NVFP4 \
       --served-model-name MiniMax-M3-NVFP4 \
       --tensor-parallel-size 4 \  # 4-way TP across the four GPUs
