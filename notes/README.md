@@ -11,7 +11,7 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
 | GPUs | 4× **RTX PRO 6000 Blackwell Max-Q Workstation Edition** (GB202GL, device `2bb4`) |
 | Compute capability | **SM120 / cc 12.0** (Blackwell) |
 | Interconnect | **PCIe 5.0 only — no NVLink** (custom all-reduce auto-disabled → PYNCCL) |
-| Board | Gigabyte **TRX50 AI TOP**, AMD Threadripper |
+| Board | Gigabyte **MH53-G40**, AMD Threadripper |
 | Driver / CUDA | 590.48.01 / CUDA 13.1 |
 | vLLM | fork `registry.ocnr.org/infra/vllm`, version `0.25.1+sm120.cu131` |
 | Model | `nvidia/MiniMax-M3-NVFP4` — VL, `MiniMaxM3SparseForConditionalGeneration`, MIXED_PRECISION (NVFP4 experts + MXFP8), 128 experts, block-sparse attention + lightning indexer, 1,048,576 max context |

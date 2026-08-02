@@ -23,7 +23,7 @@ PSU output (self-reported via the PSU's USB interface): ~280W idle, ~1.5kW under
 
 | Component | Spec |
 |---|---|
-| Motherboard | Gigabyte TRX50 AI TOP |
+| Motherboard | Gigabyte MH53-G40 |
 | CPU | 1x AMD Ryzen Threadripper PRO 9985WX |
 | Memory | 8x Kingston KF556R28-32 RDIMM, EXPO 1 |
 | GPU | 4x NVIDIA RTX PRO 6000 Blackwell Max-Q, ECC enabled |
@@ -35,10 +35,10 @@ Memory Bandwidth:
 
 | Threads | Pinning | Copy |
 | --- | --- | --- |
-| 8 | 1 per CCD | 269GB/s |
-| 16 | 2 per CCD (SMT pair) | 299GB/s |
-| 32 | 4 per CCD | 189GB/s |
-| 128 | default | 138GB/s |
+| 8 | 1 per CCD | 258GB/s |
+| 16 | 2 per CCD (SMT pair) | 288GB/s |
+| 32 | 4 per CCD | 206GB/s |
+| 128 | default | 211GB/s |
 
 PCIe Topology:
 
