@@ -1,11 +1,13 @@
 # Incident: long-context crash — CUDA unspecified launch failure (Xid 69) — OPEN
 
 ## Symptom
+
 Hard crash (not a hang) on long-context requests. A worker throws a
 context-corrupting CUDA error → the worker dies → EngineCore dies → pod restart.
 
 ```
-Autotuning kernel _topk_index_kernel ... best config BLOCK_SIZE_K: 64  (immediately before)
+Autotuning kernel _topk_index_kernel ... best config BLOCK_SIZE_K: 64
+  (immediately before)
 WorkerProc hit an exception. (Worker_TP1_EP1)
   torch.AcceleratorError: CUDA error: unspecified launch failure   (cudaErrorLaunchFailure)
   at gpu_input_batch.py:1043  update_async_output_token_ids → async_copy_ready_event.synchronize()
@@ -14,6 +16,7 @@ WorkerProc hit an exception. (Worker_TP1_EP1)
 ```
 
 Kernel log:
+
 ```
 NVRM: Xid (PCI:0000:21:00): 69, pid=..., name=python3, Class Error:
       channel 0x9, Class 0000cec0, Offset 0x184, Data ffffffff, ErrorCode 0x4
@@ -21,6 +24,7 @@ NVRM: GPU Board Serial Number: 1791526070908
 ```
 
 ## Key facts
+
 - **Xid 69** = "Graphics Engine class error" — a compute kernel submitted an
   invalid op to the engine (illegal kernel operation), *not* an ECC/memory or
   bus Xid.
@@ -37,12 +41,17 @@ NVRM: GPU Board Serial Number: 1791526070908
 
 ## Hardware elimination (all clean)
 
-| Check | Result | Conclusion |
-|---|---|---|
-| `dcgmi diag -r 3 -i 1` | **Pass** — software, memory, diagnostic, nvbandwidth, pcie, targeted_stress, targeted_power | GPU 1 die/VRAM/compute/link healthy under sustained load |
-| ECC | Enabled on **all 4** GPUs; clean | no VRAM bit-flips (also a live detector now) |
-| PCIe link speed | idle 2.5 GT/s (Gen1) → **32 GT/s (Gen5) x16 under load** | link trains to full spec; idle Gen1 is benign dynamic speed-scaling, not a fault |
-| ASPM | `LnkCtl: ASPM Disabled` on endpoint **and** root port; L1 substates off | no link sleep/wake path to glitch — ASPM ruled out |
+- **`dcgmi diag -r 3 -i 1`** — **Pass** — software, memory, diagnostic,
+  nvbandwidth, pcie, targeted_stress, targeted_power. Conclusion: GPU 1
+  die/VRAM/compute/link healthy under sustained load.
+- **ECC** — Enabled on **all 4** GPUs; clean. Conclusion: no VRAM bit-flips
+  (also a live detector now).
+- **PCIe link speed** — idle 2.5 GT/s (Gen1) → **32 GT/s (Gen5) x16 under load**.
+  Conclusion: link trains to full spec; idle Gen1 is benign dynamic
+  speed-scaling, not a fault.
+- **ASPM** — `LnkCtl: ASPM Disabled` on endpoint **and** root port; L1
+  substates off. Conclusion: no link sleep/wake path to glitch — ASPM ruled
+  out.
 
 **Caveat on DCGM/gpu-burn:** they run *generic* sustained-load kernels (link pinned
 at Gen5), so they don't exercise (a) the M3 sparse-attention kernels specifically,
@@ -50,18 +59,22 @@ nor (b) idle→wake transitions. They make gross hardware unlikely but can't ful
 exclude a rare intermittent fault under the real workload.
 
 ## Current conclusion
-Hardware, VRAM, PCIe link, and power management are all **eliminated**. The Xid 69
-class error is a **software** illegal-kernel-op, in the M3 sparse-attention indexer /
-long-context path executed on rank 1.
+
+Hardware, VRAM, PCIe link, and power management are all **eliminated**. The Xid
+69 class error is a **software** illegal-kernel-op, in the M3 sparse-attention
+indexer / long-context path executed on rank 1.
 
 ## Next step (to get a fix)
+
 Reproduce once with launch-blocking to convert the async failure into a precise
 kernel/line attribution:
+
 ```yaml
 env:
 - name: CUDA_LAUNCH_BLOCKING
   value: "1"          # TEMPORARY — serializes all kernels, big throughput hit
 ```
+
 Roll `vllm-0`, drive one long-context request until it faults, capture the
 traceback (expected: `index_topk` / sparse-attention). Optionally add
 `compute-sanitizer` for the exact illegal address. Then patch the kernel + add a
@@ -87,11 +100,12 @@ Quoting the PR description verbatim, the failure mode:
 > deadlocks.*
 
 This matches our incident shape exactly:
+
 1. `_topk_index_kernel` autotune runs per-rank with locally-measured timings →
    different ranks may pick different configs under JIT/J-cache variance
-2. Next op (NCCL collective in MoE all-to-all, or the next Triton kernel in
+1. Next op (NCCL collective in MoE all-to-all, or the next Triton kernel in
    attention) sees mismatched state on at least one rank
-3. Async CUDA error surfaces at the next `synchronize()` as
+1. Async CUDA error surfaces at the next `synchronize()` as
    `cudaErrorLaunchFailure` → Xid 69
 
 Validation on hardware identical to ours: FlashInfer PR #3614 author explicitly
@@ -116,13 +130,15 @@ turning the Xid-69 incident from "open" to "fixed."
 
 ### Related FlashInfer fixes (newer than pin, take with the bump)
 
-| SHA | PR | What | Relevance |
-|---|---|---|---|
-| `2c0d595f` | #3187 | `set_autotune_process_group` | **primary fix for this incident** |
-| `59b1c4d7` | #3614 | MXFP8 cutlass MoE profiler autotune crash (null SF pointer) | defense in depth — same family, different kernel |
-| `596d1a06` | #3840 | fail loud on missing `(numExperts, topK)` routing tier | M3 (128/8) is covered; cheap insurance |
-| `ce52279d` | #3863 | clamp `CTA_TILE_Q` for SM120 99 KiB smem cap | not in topk path, but useful to know about SM120 limit |
-| `783914f9` | #3687 | autotuner memory leak | hygiene |
+- `2c0d595f` (#3187) — `set_autotune_process_group` — **primary fix for this
+  incident**.
+- `59b1c4d7` (#3614) — MXFP8 cutlass MoE profiler autotune crash (null SF
+  pointer) — defense in depth, same family, different kernel.
+- `596d1a06` (#3840) — fail loud on missing `(numExperts, topK)` routing
+  tier — M3 (128/8) is covered; cheap insurance.
+- `ce52279d` (#3863) — clamp `CTA_TILE_Q` for SM120 99 KiB smem cap — not in
+  topk path, but useful to know about SM120 limit.
+- `783914f9` (#3687) — autotuner memory leak — hygiene.
 
 ### Why we still need CUDA_LAUNCH_BLOCKING attribution first
 
@@ -133,7 +149,7 @@ attribution is what converts "plausible mechanism" into "confirmed site."
 Both pieces are needed: confirm the faulting site is in the autotune-affected
 path, then take PR #3187 to prevent it.
 
-### ⚠ Caveat — does PR #3187 target the right autotuner?
+### ⚠ Caveat — does PR #3187 target the right autotuner
 
 `_topk_index_kernel` is decorated with **Triton autotune** (`@triton.autotune`,
 `key=["BLOCK_SIZE_T"]` — `BLOCK_SIZE_T=next_power_of_2(topk)`, M3 default
@@ -147,12 +163,13 @@ won't fix it — the symptom pattern matches but the mechanism is in the
 wrong autotuner.
 
 **Repro path to disambiguate:**
+
 1. Run with `CUDA_LAUNCH_BLOCKING=1` per the diagnostic playbook.
-2. If the faulting kernel reports as `index_topk.py:_topk_index_kernel` →
+1. If the faulting kernel reports as `index_topk.py:_topk_index_kernel` →
    it's the Triton autotune; PR #3187 is not the right fix; we'd need
    either (a) pre-warm + pin the Triton config, or (b) a Triton-side
    sync (much harder — Triton has no `set_autotune_process_group`).
-3. If the faulting kernel reports as a FlashInfer MoE op
+1. If the faulting kernel reports as a FlashInfer MoE op
    (`trtllm_fp4_block_scale_moe`, `cutlass_fused_moe`, etc.) → PR #3187
    is the right fix.
 
@@ -164,14 +181,17 @@ the shape matches, not because we've confirmed the site."
 
 ## Status
 
-| Date | Event |
-| --- | --- |
-| 2026-07 | Incident doc drafted, both CPU/GPU diagnostic candidates noted |
-| 2026-07-10 | FlashInfer pin bump past PR #3187 landed in `infra/vllm` (`1b5da749b`) |
-| 2026-07-10 | VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP wire-up in warmup landed (`f256368d0`); forces all ranks into the autotune context so the all-reduce in `_profile_single_kernel` doesn't deadlock on missing peers |
-| 2026-07-10 | Image rebuilt and pushed to registry (`9b61dbd...`) |
-| 2026-07-11 | Env var set in `stage3/apps/vllm.yaml` (`56d81ffc`); currently opt-in active in production |
-| Pending | `CUDA_LAUNCH_BLOCKING=1` repro to pin the actual faulting kernel |
+- **2026-07** — Incident doc drafted, both CPU/GPU diagnostic candidates noted.
+- **2026-07-10** — FlashInfer pin bump past PR #3187 landed in `infra/vllm`
+  (`1b5da749b`).
+- **2026-07-10** — VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP wire-up in warmup
+  landed (`f256368d0`); forces all ranks into the autotune context so the
+  all-reduce in `_profile_single_kernel` doesn't deadlock on missing peers.
+- **2026-07-10** — Image rebuilt and pushed to registry (`9b61dbd...`).
+- **2026-07-11** — Env var set in `stage3/apps/vllm.yaml` (`56d81ffc`);
+  currently opt-in active in production.
+- **Pending** — `CUDA_LAUNCH_BLOCKING=1` repro to pin the actual faulting
+  kernel.
 
 Status: **fix candidate deployed, attribution pending**. Since 2026-07-11
 the env var is on in production; no Xid-69 has fired on the new build as
@@ -181,6 +201,7 @@ workloads, that's evidence the fix is right; if it recurs with
 it's the Triton path and we need the listener implementation.
 
 ## Diagnostic playbook (for next time)
+
 - No host `dcgmi`/`py-spy`/`docker` on the node; containerd only. Runtimes:
   `crictl` (k8s.io namespace), `ctr`. GPU test images available:
   `registry.ocnr.org/infra/nvidia-devel`, the vllm image (has torch+CUDA).
@@ -199,4 +220,5 @@ it's the Triton path and we need the listener implementation.
   `CUDA_VISIBLE_DEVICES=1,0,2,3` so logical rank 1 runs on a *different* physical
   card; if the next Xid follows PCI `21:00` it's the card, if it follows rank 1
   it's software. (Hardware is already cleared, so this is now optional.)
-- **PCIe link under load**: `nvidia-smi --query-gpu=index,pcie.link.gen.gpucurrent,pcie.link.gen.max --format=csv`.
+- **PCIe link under load**: `nvidia-smi --query-gpu=index,pcie.link.gen.gpucurrent,
+  pcie.link.gen.max --format=csv`.

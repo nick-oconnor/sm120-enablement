@@ -17,7 +17,8 @@ A workstation serving [DeepSeek-V4-Flash-0731](https://huggingface.co/deepseek-a
 | 32768     | 4096       | 271            | 6860ms    | 12ms     |
 | 131072    | 8192       | 214            | 32776ms   | 13ms     |
 
-PSU output (self-reported via the PSU's USB interface): ~280W idle, ~1.5kW under bench load, 1.71kW peak.
+PSU output (self-reported via the PSU's USB interface): ~280W idle, ~1.5kW
+under bench load, 1.71kW peak.
 
 ## Hardware
 
@@ -96,37 +97,58 @@ docker run --rm --gpus all --ipc=host \
   -v <host-models-path>:/models:ro \
   -v <host-cache-path>:/home/vllm \
   -p 8000:8000 \
-  -e HF_HUB_OFFLINE=1 \  # weights come from the local /models mount, not the Hub
-  -e NCCL_P2P_LEVEL=NODE \  # NCCL can't auto-detect P2P from inside the container; declare it manually
-  -e RAYON_NUM_THREADS=4 \  # cap the Rayon thread pool (used by tokenizers/parquet)
-  -e MAX_JOBS=32 \  # cap JIT parallelism so container PIDs stay sane
-  -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \  # sync FlashInfer autotune tactic choice across TP ranks during warmup
-  -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \  # host-side barrier after OffloadingConnector.start_load_kv to prevent the TP rank desync on KV load
+# weights come from the local /models mount, not the Hub
+  -e HF_HUB_OFFLINE=1 \
+# NCCL can't auto-detect P2P from inside the container; declare it manually
+  -e NCCL_P2P_LEVEL=NODE \
+# cap the Rayon thread pool (used by tokenizers/parquet)
+  -e RAYON_NUM_THREADS=4 \
+# cap JIT parallelism so container PIDs stay sane
+  -e MAX_JOBS=32 \
+# sync FlashInfer autotune tactic choice across TP ranks during warmup
+  -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \
+# host-side barrier after OffloadingConnector.start_load_kv to prevent the
+# TP rank desync on KV load
+  -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \
   vllm:0.26.0-sm120-cu133 \
     /models/deepseek-ai/DeepSeek-V4-Flash-0731 \
       --served-model-name DeepSeek-V4-Flash-0731 \
-      --tensor-parallel-size 4 \  # 4-way TP across the four GPUs
-      --enable-expert-parallel \  # 256 routed MoE experts, sharded 64 per TP rank
+# 4-way TP across the four GPUs
+      --tensor-parallel-size 4 \
+# 256 routed MoE experts, sharded 64 per TP rank
+      --enable-expert-parallel \
       --trust-remote-code \
-      --tokenizer-mode deepseek_v4 \  # DeepSeek-V4's custom encoder + tokenizer strategy (deepseek_v4)
-      --max-model-len auto \  # resolves to the full 1,048,576-token context; auto-fit confirms the 1,581,597-token fp8 KV cache fits the whole 1M
+# DeepSeek-V4's custom encoder + tokenizer strategy (deepseek_v4)
+      --tokenizer-mode deepseek_v4 \
+# resolves to the full 1,048,576-token context; auto-fit confirms the
+# 1,581,597-token fp8 KV cache fits the whole 1M
+      --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 16384 \
-      --gpu-memory-utilization 0.7 \  # deliberate: leaves ~30% GPU memory unallocated for co-resident workloads on the box (comfyui), not for KV growth
-      --kv-cache-dtype fp8 \  # model ships fp8 (block-scaled + MXFP4 MoE); fp8 KV cache matches it and fits the 1M context
-      --kv-offloading-size 100 \  # 100 GiB host-RAM offload buffer; speeds up long-context requests under concurrent load
+# deliberate: leaves ~30% GPU memory unallocated for co-resident workloads
+# on the box (comfyui), not for KV growth
+      --gpu-memory-utilization 0.7 \
+# model ships fp8 (block-scaled + MXFP4 MoE); fp8 KV cache matches it and
+# fits the 1M context
+      --kv-cache-dtype fp8 \
+# 100 GiB host-RAM offload buffer; speeds up long-context requests under
+# concurrent load
+      --kv-offloading-size 100 \
       --kv-offloading-backend native \
-      --block-size 256 \  # DeepSeek-V4's compressed sparse-MLA cache has heterogeneous block groups; 256 is the full-MLA group (SWA=64, C4 states=4, C128 states=8 are derived internally)
+# DeepSeek-V4's compressed sparse-MLA cache has heterogeneous block groups;
+# 256 is the full-MLA group (SWA=64, C4 states=4, C128 states=8 are derived
+# internally)
+      --block-size 256 \
       --enable-prefix-caching \
       --enable-chunked-prefill \
       --tool-call-parser deepseek_v4 \
       --reasoning-parser deepseek_v4 \
       --enable-auto-tool-choice \
-      --default-chat-template-kwargs '{"thinking": true}'  # force thinking mode on every turn
+# force thinking mode on every turn
+      --default-chat-template-kwargs '{"thinking": true}'
 ```
 
 ---
 
-Operational deep-dive — build/deploy config, the full launch-blocker list, and production-incident post-mortems — lives in [`notes/`](notes/).
-
-
+Operational deep-dive — build/deploy config, the full launch-blocker list, and
+production-incident post-mortems — lives in [`notes/`](notes/).

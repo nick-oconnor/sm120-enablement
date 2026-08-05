@@ -57,18 +57,19 @@ auto-fit KV line; drop util to ~0.95 if boot gets tight.
 
 ## The 5 original launch blockers (all fixed)
 
-1. **OOM / experts loaded unquantized (bf16).** ModelOpt-mixed `_resolve_quant_algo`
-   missed the experts because the nested `MiniMaxM3SparseForCausalLM` weight mapper
-   strips the `language_model.` prefix from the shared quant config's keys while the
-   live module prefix keeps it. Fix: add a `language_model.`-stripped candidate in
+1. **OOM / experts loaded unquantized (bf16).** ModelOpt-mixed
+   `_resolve_quant_algo` missed the experts because the nested
+   `MiniMaxM3SparseForCausalLM` weight mapper strips the `language_model.`
+   prefix from the shared quant config's keys while the live module prefix
+   keeps it. Fix: add a `language_model.`-stripped candidate in
    `_quantized_layer_prefix_candidates` (`modelopt.py`).
-2. **`FLASHINFER_TRTLLM` wants downloaded cubins** (unavailable offline) →
+1. **`FLASHINFER_TRTLLM` wants downloaded cubins** (unavailable offline) →
    `--moe-backend flashinfer_cutlass`.
-3. **`nvrtc.h` missing** for FlashInfer runtime JIT → add
+1. **`nvrtc.h` missing** for FlashInfer runtime JIT → add
    `cuda-nvrtc-dev-${CUDA_VERSION_DASH}` to the Dockerfile final stage.
-4. **KV block-size reconciliation fails** (`No common block size for 16`) →
+1. **KV block-size reconciliation fails** (`No common block size for 16`) →
    `--block-size 128`.
-5. **Multi-GPU PCIe P2P**: `NCCL_P2P_LEVEL=NODE`; custom all-reduce auto-disables
+1. **Multi-GPU PCIe P2P**: `NCCL_P2P_LEVEL=NODE`; custom all-reduce auto-disables
    on >2 PCIe-only GPUs → PYNCCL. PR #47544 adds a functional-P2P verify guard.
 
 ## Build image
@@ -87,8 +88,13 @@ Rebased onto upstream `main` (`cc1d020d0`). Minimal validated set:
 - **#47544** — verify functional P2P before enabling MiniMax fused AR+RMSNorm
 - **ocnr commit** — build config + the fixes below
 
-Dropped as unnecessary (verified no dangling refs): #43814, #47577, #47392,
-#47599, #47515.
+Dropped as unnecessary (verified no dangling refs):
+
+- #43814
+- #47577
+- #47392
+- #47599
+- #47515
 
 ## ocnr code fixes (in the squashed `ocnr:` commit)
 
@@ -109,19 +115,20 @@ the strict Rust parser, so three fixes compose as a pipeline:
 
 1. **Normalize** (pr-47001, `_MISSING_NS_RE`): add the NS prefix to bare tags that
    arrive whole-in-delta.
-2. **Boundary collapse** (ocnr, `minimax_m3_tool_parser.py`): the per-delta regex
+1. **Boundary collapse** (ocnr, `minimax_m3_tool_parser.py`): the per-delta regex
    can't see an NS marker that arrived in an *earlier* delta (it's its own token),
    so it double-prefixes → `]<]minimax[>[]<]minimax[>[</tool_call>` which the Rust
    parser rejects. Drop the duplicate straddling the boundary.
-3. **Rust `opt(NAMESPACE)` close** (ocnr, `rust/.../tool/minimax_m3.rs`): accept a
-   close with 0 or 1 NS prefix, so a genuinely bare `</tool_call>` (model dropped
-   the prefix, split across deltas so #1 can't repair it) still ends the block.
-4. **Content strip** (ocnr): strip `]<]minimax[>[` from any streamed *content*
+1. **Rust `opt(NAMESPACE)` close** (ocnr,
+   `rust/.../tool/minimax_m3.rs`): accept a close with 0 or 1 NS prefix, so a
+   genuinely bare `</tool_call>` (model dropped the prefix, split across
+   deltas so #1 can't repair it) still ends the block.
+1. **Content strip** (ocnr): strip `]<]minimax[>[` from any streamed *content*
    delta (the Rust parser can surface it as content in malformed cases).
 
-Contracts line up: #2 caps input at ≤1 NS; the Rust `opt` accepts 0 or 1. Verified
-with cargo tests (`tolerates_bare_tool_call_close`) and a standalone regex repro of
-the double-NS case.
+Contracts line up: #2 caps input at ≤1 NS; the Rust `opt` accepts 0 or 1.
+Verified with cargo tests (`tolerates_bare_tool_call_close`) and a standalone
+regex repro of the double-NS case.
 
 ## Reasoning (`minimax_m3`) — not a bug, just a field name
 
