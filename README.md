@@ -12,10 +12,10 @@ A workstation serving [DeepSeek-V4-Flash-0731](https://huggingface.co/deepseek-a
 
 | Input Tokens | Output Tokens | Decode (tok/s) | p50 TTFT  | p50 ITL  |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 242            | 65ms      | 12ms     |
-| 8192      | 1024       | 329            | 60ms      | 12ms     |
-| 32768     | 4096       | 271            | 6860ms    | 12ms     |
-| 131072    | 8192       | 214            | 32776ms   | 13ms     |
+| 2048      | 256        | 327            | 54ms      | 12ms     |
+| 8192      | 1024       | 319            | 81ms      | 12ms     |
+| 32768     | 4096       | 278            | 6647ms    | 12ms     |
+| 131072    | 8192       | 215            | 31860ms   | 13ms     |
 
 PSU output (self-reported via the PSU's USB interface): ~280W idle, ~1.5kW
 under bench load, 1.71kW peak.
