@@ -103,6 +103,7 @@ docker run --rm --gpus all --ipc=host --shm-size 120g \
   -e NCCL_P2P_LEVEL=NODE \
 # cap the Rayon thread pool (used by tokenizers/parquet)
   -e RAYON_NUM_THREADS=4 \
+  -e OMP_NUM_THREADS=4 \
 # cap JIT parallelism so container PIDs stay sane
   -e MAX_JOBS=32 \
 # sync FlashInfer autotune tactic choice across TP ranks during warmup
