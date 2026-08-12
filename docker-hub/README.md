@@ -2,7 +2,7 @@ Standalone [vLLM‎](https://github.com/nick-oconnor/vllm) inference image for t
 
 Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for serving **DeepSeek-V4-Flash-0731** (fp8 MoE). The SM120 kernel paths (FlashInfer FP4/CUTLASS MoE, DeepGEMM, TileLang) are built from source — FlashInfer's stock wheels and tagged CUTLASS releases do not ship the SM120 paths. FlashInfer JITs the SM120 CUTLASS MoE kernels at server startup, so `cuda-nvrtc-dev` ships in the runtime layer.
 
-#### Image contents
+#### Image Contents
 - **vLLM** from the fork's `0.27` branch (built and tagged as `0.27.1-sm120-cu133`), rebased onto v0.27.1 which supports DeepSeek-V4 natively, with the ocnr SM120-specific config on top
 - **CUDA 13.3** runtime + toolchain (so JIT MoE kernels compile at server startup — `cuda-nvrtc-dev` is in the runtime layer, not just the build layer)
 - **FlashInfer** built from source at `v0.6.16.post3` for the SM120 FP4/CUTLASS MoE kernels, plus `set_autotune_process_group` (Xid-69 fix)
@@ -12,7 +12,7 @@ Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for
 - **py-spy + `dump-jam-state.sh`** pre-installed for incident diagnostics (dumps py-spy traces, `nvidia-smi`, and dmesg Xid lines)
 - `TORCH_CUDA_ARCH_LIST="12.0"` — only SM120 gets built, so the image is smaller than the upstream `vllm/vllm` images that target every arch
 
-#### Quick start
+#### Quick Start
 
 ```bash
 docker run --rm --gpus all --ipc=host --shm-size 120g \
