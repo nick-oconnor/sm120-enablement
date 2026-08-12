@@ -68,8 +68,8 @@ PCIe Speed (between GPU pairs):
 ## vLLM Build
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm).
-Upstream-tracking, rebased onto v0.26.0 which supports DeepSeek-V4 natively.
-The ocnr SM120-specific config (`0.26.0+sm120.cu133`) sits on top.
+Upstream-tracking, rebased onto v0.27.1 which supports DeepSeek-V4 natively.
+The ocnr SM120-specific config (`0.27.1+sm120.cu133`) sits on top.
 
 Build constraints:
 
@@ -83,12 +83,12 @@ Build constraints:
   fails to boot.
 
 ```bash
-git clone --branch 0.26 https://github.com/nick-oconnor/vllm.git
+git clone --branch 0.27 https://github.com/nick-oconnor/vllm.git
 cd vllm
-docker build -f docker/Dockerfile -t vllm:0.26.0-sm120-cu133 .
+docker build -f docker/Dockerfile -t vllm:0.27.1-sm120-cu133 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.26.0-sm120-cu133](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.26.0-sm120-cu133).
+Pre-built amd64 image: [ngpitt/vllm:0.27.1-sm120-cu133](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.27.1-sm120-cu133).
 
 ## vLLM Execution
 
@@ -110,7 +110,7 @@ docker run --rm --gpus all --ipc=host \
 # host-side barrier after OffloadingConnector.start_load_kv to prevent the
 # TP rank desync on KV load
   -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \
-  vllm:0.26.0-sm120-cu133 \
+  vllm:0.27.1-sm120-cu133 \
     /models/deepseek-ai/DeepSeek-V4-Flash-0731 \
       --served-model-name DeepSeek-V4-Flash-0731 \
 # 4-way TP across the four GPUs
