@@ -15,7 +15,7 @@ Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for
 #### Quick Start
 
 ```bash
-docker run --rm --gpus all --ipc=host --shm-size 120g \
+docker run --rm --gpus all --shm-size 120g \
   -v <host-models-path>:/models:ro \
   -v <host-cache path>:/home/vllm \
   -p 8000:8000 \
