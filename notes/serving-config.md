@@ -1,147 +1,131 @@
-# Serving config & fixes — MiniMax-M3-NVFP4 on SM120
+# Serving config & fixes — SM120 single-outlet inference
 
-## Validated launch config
+## GLM-5.3-Flash — current (validated 2026-08-29)
 
-Runs the full 1M context across 4× RTX PRO 6000 Blackwell (SM120, PCIe-only),
-fp8 KV cache, expert parallelism, FlashInfer-CUTLASS NVFP4 MoE, Triton attention.
-Validated end-to-end: boot → serve → chat → tool call (no `]<]minimax[>[` leak) →
-reasoning.
+Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
+`registry.ocnr.org/infra/vllm:0.29.0-sm120-cu130@sha256:29005b58…` built from
+the fork's `0.29` branch (`d1fc212696`), which includes the
+hardware-verified SM120 GLM-5.3 port (fp8 + FlashInfer NoPE sparse MLA) and
+the 2026-08-28 kv-offload fix series.
 
 ```
-vllm serve /models/nvidia/MiniMax-M3-NVFP4 \
-  --served-model-name MiniMax-M3-NVFP4 \
-  --tensor-parallel-size 4 \
-  --enable-expert-parallel \
+vllm serve /models/zai-org/GLM-5.3-Flash \
+  --served-model-name GLM-5.3-Flash \
   --trust-remote-code \
-  --tokenizer-mode hf \
+  --tensor-parallel-size 4 \
+  --disable-custom-all-reduce \
+  --enable-expert-parallel \
   --max-model-len auto \
   --max-num-seqs 4 \
   --max-num-batched-tokens 8192 \
   --gpu-memory-utilization 0.97 \
   --kv-cache-dtype fp8 \
-  --attention-backend TRITON_ATTN \
-  --moe-backend flashinfer_cutlass \
-  --block-size 128 \
+  --kv-offloading-size 100 \
+  --kv-offloading-backend native \
   --enable-prefix-caching \
   --enable-chunked-prefill \
-  --tool-call-parser minimax_m3 \
-  --reasoning-parser minimax_m3 \
+  --tool-call-parser glm47 \
+  --reasoning-parser glm45 \
   --enable-auto-tool-choice \
-  --limit-mm-per-prompt '{"image":1,"video":0}'
+  --limit-mm-per-prompt '{"image": 1, "video": 0}' \
+  --default-chat-template-kwargs '{"thinking": true}'
 ```
 
-Required env: `HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, plus (to survive the
-container PID limit during FlashInfer JIT + HF tokenization) `RAYON_NUM_THREADS=4`
-and `MAX_JOBS=32`. Deployed via k8s-gitops `stage3/apps/vllm.yaml`.
+Env: `HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`,
+`OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
+`VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1`, `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`).
+Keep CUDA graph memory profiling enabled (v0.21+ default, don't set
+`VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0` — see *Allocator flush-retry
+warnings* below).
 
-At 0.97 util: full context auto-fits (`GPU KV cache size: 1,136,384 tokens`,
-1.08× concurrency for a 1,048,576-token request). **Note:** ECC is now enabled
-on all four GPUs (see Xid-69 incident) which trims ~6% VRAM — re-check the
-auto-fit KV line; drop util to ~0.95 if boot gets tight.
+### Auto-fit memory model (measured, 4× RTX PRO 6000, fp8 KV, TP4)
 
-> **Do NOT add `--kv-offloading-size` / `--kv-offloading-backend`** — see
-> `incident-kv-offload-deadlock.md`.
+`--max-model-len auto` binary-searches the largest context that fits the
+profiled KV budget (`kv_cache_utils.py:_auto_fit_max_model_len`) and logs one
+of:
 
-## Why each non-obvious flag
+- `Auto-fit max_model_len: full model context length 1048576 fits in available GPU memory`
+- `Auto-fit max_model_len: reduced from 1048576 to NNNN to fit in available GPU memory (… GiB)`
 
-- `--enable-expert-parallel` — 128 routed experts; EP works on 4 GPUs (DCP needs
-  TP > num_kv_heads, which fails at 4, so EP is the route).
-- `--kv-cache-dtype fp8` — fits the full 1M context in GPU KV.
-- `--attention-backend TRITON_ATTN` — M3 sparse attention needs block size 128;
-  FlashAttn's fp8 path is SM90-only, and FlashInfer caps block ≤64 on SM120.
-  Triton reconciles both.
-- `--moe-backend flashinfer_cutlass` — the only NVFP4 MoE backend on SM120 that
-  applies M3's clamped SwiGLU-OAI (`swiglu_limit`). TRTLLM needs downloaded
-  cubins (fails offline); it also maps to plain Swiglu and drops the clamp.
-- `--block-size 128` — required by M3 sparse attention.
+Per-GPU levers (1% of gmu ≈ 0.93 GiB on the 97,887 MiB cards):
 
-## The 5 original launch blockers (all fixed)
+| Lever | KV effect |
+|---|---|
+| 1M tokens costs | ≈ 7.6 GiB/GPU (≈7.6 KiB/token) |
+| gmu 0.94 → 0.97 | +2.8 GiB |
+| mbt 2048 → 8192 (profiled prefill activations) | −0.74 GiB |
+| Vision stack resident (image: 1) | −0.33 GiB |
+| CUDA graph reserve (profiling enabled) | −0.95 GiB vs profiling disabled |
 
-1. **OOM / experts loaded unquantized (bf16).** ModelOpt-mixed
-   `_resolve_quant_algo` missed the experts because the nested
-   `MiniMaxM3SparseForCausalLM` weight mapper strips the `language_model.`
-   prefix from the shared quant config's keys while the live module prefix
-   keeps it. Fix: add a `language_model.`-stripped candidate in
-   `_quantized_layer_prefix_candidates` (`modelopt.py`).
-1. **`FLASHINFER_TRTLLM` wants downloaded cubins** (unavailable offline) →
-   `--moe-backend flashinfer_cutlass`.
-1. **`nvrtc.h` missing** for FlashInfer runtime JIT → add
-   `cuda-nvrtc-dev-${CUDA_VERSION_DASH}` to the Dockerfile final stage.
-1. **KV block-size reconciliation fails** (`No common block size for 16`) →
-   `--block-size 128`.
-1. **Multi-GPU PCIe P2P**: `NCCL_P2P_LEVEL=NODE`; custom all-reduce auto-disables
-   on >2 PCIe-only GPUs → PYNCCL. PR #47544 adds a functional-P2P verify guard.
+Final config `0.97 + mbt 8192` → 7.95 GiB → **1,100,441 tokens, full 1M with
+`image: 1` (1.05x concurrency)**. A 1M request consumes ~95% of GPU KV;
+concurrent overflow spills to the 100 GiB offload tier. Forcing
+`--max-model-len 1048576` explicitly does *not* bypass the fit check — it
+raises a hard ValueError at startup while memory is short.
 
-## Build image
+### Allocator flush-retry warnings (benign, know the signature)
 
-`registry.ocnr.org/infra/vllm:0.25.1-sm120-cu131` — CUDA 13.1.1, Ubuntu 24.04,
-arch list `12.0`, CUTLASS pinned to HEAD `e8ecfad` (`GIT_SHALLOW FALSE`, commit
-hash can't shallow-fetch), FlashInfer built from source (jit-cache wheel lacks
-SM120 kernels), `cuda-nvrtc-dev` added.
+```
+[W829 HH:MM:SS CUDACachingAllocator.cpp:3933] memory allocation failed with OOM
+on device N while trying to allocate X bytes (free: Y, total: 102014189568)
+```
 
-## PR stack (fork `main`)
+These are the caching allocator's first-attempt-missed, flush-cached-blocks-
+and-retry path — warning level, self-healing, and expected once per new
+runtime shape. The hard-fail variant to
+watch for is `RuntimeError: CUDA out of memory. Tried to allocate …` — that
+kills the engine; fall back gmu → 0.965 (mbt 8192) or mbt → 4096 (gmu 0.97),
+both of which still hold 1M.
 
-Rebased onto upstream `main` (`cc1d020d0`). Minimal validated set:
+### Benchmarks (2026-08-29, 16 prompts, concurrency 4, zero failures)
 
-- **#45738** — NVFP4 clamped SwiGLU-OAI on FlashInfer-CUTLASS MoE
-- **#47001** — MiniMax-M3 bugfix v2 (pure-Python tool parser primary, XML/param parsing)
-- **#47544** — verify functional P2P before enabling MiniMax fused AR+RMSNorm
-- **ocnr commit** — build config + the fixes below
+| Input | Output | Decode (tok/s) | p50 TTFT | p50 ITL |
+|---|---|---|---|---|
+| 2048 | 256 | 182 | 677ms | 19ms |
+| 8192 | 1024 | 181 | 1716ms | 19ms |
+| 32768 | 4096 | 184 | 6467ms | 19ms |
+| 131072 | 8192 | 150 | 20395ms | 20ms |
 
-Dropped as unnecessary (verified no dangling refs):
+Mid-run Triton/TileLang JIT compiles (`_count_expert_num_tokens`,
+`_kpool_tail_seed_kernel`, `mhc_pre_big_fuse_with_norm_tilelang`) still fire on
+first hit of uncovered shapes — one-off latency spikes, warmup-coverage fix
+pending.
 
-- #43814
-- #47577
-- #47392
-- #47599
-- #47515
+### kv-offload status
 
-## ocnr code fixes (in the squashed `ocnr:` commit)
+**Enabled** (`--kv-offloading-size 100 --kv-offloading-backend native`) after
+the 2026-08-28 fix series (`d1fc212696`, one fix per assert surface):
+GLM-5.3's kpool-tail KV group (4-token blocks, opts out of
+prefix caching) broke every offload-connector invariant that assumes all
+groups are hash-chained; the series makes non-participating groups fully
+GPU-resident across config, store/load, lookup/match, and alloc accounting.
+The deadlock below was the pre-series state on the M3/0.25.1 build.
 
-- **Build**: CUDA 13.1.1 / Ubuntu 24.04 / sm120 arch / GitLab CI / `VERSION`.
-- **CUTLASS** pinned to HEAD `e8ecfad` for SM120 FP4 kernels.
-- **`cuda-nvrtc-dev`** for FlashInfer SM120 JIT.
-- **`ckpt_names=("w1","w2","w3")`** passed to `FusedMoE` (nvidia/model.py) so
-  ModelOpt NVFP4 resolves the fused experts (else unquantized → OOM).
-- **NVFP4 quant resolution** for VL-nested MoE experts (`language_model.` prefix
-  strip) in `modelopt.py`.
-- **Tool parser** streaming fixes — see `tool-parser` section below.
+## MiniMax-M3-NVFP4 — historical (2026-08, superseded by GLM-5.3-Flash)
 
-## Tool parser (`minimax_m3`) — streaming namespace handling
+Served at gmu 0.97 on the `0.25.1-sm120-cu131` image (full flag list in git
+history); full 1M context auto-fit at 1,136,384 KV tokens. **Do NOT add
+kv-offloading on this config** — see `incident-kv-offload-deadlock.md`.
+Superseded for GLM-5.3-Flash, where offloading is enabled after the
+2026-08-28 fix series (above).
 
-The model wraps every structural tag with the `]<]minimax[>[` namespace marker.
-Non-streaming uses a tolerant pure-Python parser (#47001). Streaming delegates to
-the strict Rust parser, so three fixes compose as a pipeline:
+Durable lessons from that bring-up:
 
-1. **Normalize** (pr-47001, `_MISSING_NS_RE`): add the NS prefix to bare tags that
-   arrive whole-in-delta.
-1. **Boundary collapse** (ocnr, `minimax_m3_tool_parser.py`): the per-delta regex
-   can't see an NS marker that arrived in an *earlier* delta (it's its own token),
-   so it double-prefixes → `]<]minimax[>[]<]minimax[>[</tool_call>` which the Rust
-   parser rejects. Drop the duplicate straddling the boundary.
-1. **Rust `opt(NAMESPACE)` close** (ocnr,
-   `rust/.../tool/minimax_m3.rs`): accept a close with 0 or 1 NS prefix, so a
-   genuinely bare `</tool_call>` (model dropped the prefix, split across
-   deltas so #1 can't repair it) still ends the block.
-1. **Content strip** (ocnr): strip `]<]minimax[>[` from any streamed *content*
-   delta (the Rust parser can surface it as content in malformed cases).
-
-Contracts line up: #2 caps input at ≤1 NS; the Rust `opt` accepts 0 or 1.
-Verified with cargo tests (`tolerates_bare_tool_call_close`) and a standalone
-regex repro of the double-NS case.
-
-## Reasoning (`minimax_m3`) — not a bug, just a field name
-
-- vLLM emits reasoning under the message field **`reasoning`** (this version
-  renamed `reasoning_content` → `reasoning`). A client reading `reasoning_content`
-  sees nothing — that's the usual "reasoning missing" symptom.
-- Chosen config: **adaptive** (no `--default-chat-template-kwargs`). The model
-  decides per-turn whether to emit `<mm:think>…</mm:think>`; when it does, the
-  parser splits `reasoning` + clean `content` and never leaks tags. When it
-  doesn't, it writes an inline "**Reasoning:**" section into `content` (clean).
-- `--default-chat-template-kwargs '{"thinking_mode":"enabled"}'` forces thinking
-  every turn (incl. after each tool result) — declined for the per-tool-round-trip
-  token cost. `thinking_mode` reaches the parser via `_effective_chat_template_kwargs`
-  → `Parser.__init__`.
-- opencode (bundled AI SDK) reads both `reasoning` and `reasoning_content`, so it
-  displays reasoning fine.
+- Nested VL models can hide MoE experts from ModelOpt quant resolution (the
+  nested weight mapper strips the `language_model.` prefix) → experts load
+  bf16 and OOM. Fix lives in `_quantized_layer_prefix_candidates`.
+- TRTLLM MoE needs downloaded cubins — unusable offline; FlashInfer-CUTLASS
+  was the only SM120 backend honoring M3's clamped SwiGLU.
+- FlashInfer runtime JIT needs `cuda-nvrtc-dev` in the *runtime* image, not
+  just the build image.
+- Hybrid/sparse attention reconciles block sizes across groups; a mismatched
+  `--block-size` fails KV init ("No common block size").
+- PCIe-only multi-GPU: `NCCL_P2P_LEVEL=NODE`, custom all-reduce auto-disables
+  beyond 2 GPUs, and P2P should be functionally verified before enabling
+  fused AR+RMSNorm (vllm PR #47544).
+- vLLM renamed the reasoning field `reasoning_content` → `reasoning`; clients
+  reading only the old name see "missing reasoning".
+- Tool-call streaming: per-delta regexes can't see namespace markers that
+  arrived in earlier deltas — parser fixes must compose normalize →
+  boundary-collapse → tolerant-close (M3's stack: #47001 + ocnr fixes,
+  cargo-tested).

@@ -1,7 +1,7 @@
 # ocnr notes — MiniMax-M3-NVFP4 on SM120
 
 Operational deep-dive for serving **`nvidia/MiniMax-M3-NVFP4`** on the ocnr vLLM
-fork (`registry.ocnr.org/infra/vllm`) — the build/deploy config and
+fork — the build/deploy config and
 production-incident post-mortems behind the top-level [writeup](../README.md).
 
 ## Hardware / platform
@@ -13,7 +13,7 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
 | Interconnect | **PCIe 5.0 only — no NVLink** |
 | Board | Gigabyte **MH53-G40**, AMD Threadripper |
 | Driver / CUDA | 590.48.01 / CUDA 13.1 |
-| vLLM | fork `registry.ocnr.org/infra/vllm`, version `0.25.1+sm120.cu131` |
+| vLLM | ocnr fork, version `0.25.1+sm120.cu131` |
 | Model | `nvidia/MiniMax-M3-NVFP4` |
 
 - GPU die: (GB202GL, device `2bb4`).

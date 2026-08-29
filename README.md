@@ -1,24 +1,26 @@
 # Single-Outlet Inference
 
-A workstation serving [DeepSeek-V4-Flash-0731](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731)
-(284B MoE / 13B active, fp8, 1M-token context) with
-[vLLM](https://github.com/nick-oconnor/vllm).
+A workstation serving [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)
+(sparse-MLA MoE with native vision, 1M-token context) with
+[vLLM](https://github.com/nick-oconnor/vllm). Previously: DeepSeek-V4-Flash-0731
+and MiniMax-M3-NVFP4 — their configs live in
+[`notes/`](notes/).
 
 ![system](images/system.jpg)
 
 ## Benchmarks
 
-16 prompts, concurrency 4, per row.
+GLM-5.3-Flash, vLLM `0.29.0-sm120-cu130` (2026-08-29). 16 prompts, concurrency 4,
+random dataset, zero failed requests.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | p50 TTFT  | p50 ITL  |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 327            | 54ms      | 12ms     |
-| 8192      | 1024       | 319            | 81ms      | 12ms     |
-| 32768     | 4096       | 278            | 6647ms    | 12ms     |
-| 131072    | 8192       | 215            | 31860ms   | 13ms     |
+| 2048      | 256        | 182            | 677ms     | 19ms     |
+| 8192      | 1024       | 181            | 1716ms    | 19ms     |
+| 32768     | 4096       | 184            | 6467ms    | 19ms     |
+| 131072    | 8192       | 150            | 20395ms   | 20ms     |
 
-PSU output (self-reported via the PSU's USB interface): ~280W idle, ~1.5kW
-under bench load, 1.71kW peak.
+PSU output (self-reported via the PSU's USB interface): 234W idle, 1.28kW under bench load, 1.76kW peak.
 
 ## Hardware
 
@@ -30,7 +32,7 @@ under bench load, 1.71kW peak.
 | GPU | 4x NVIDIA RTX PRO 6000 Blackwell Max-Q, ECC enabled |
 | Interconnect | 4x PCIe Gen 5 x16 |
 | PSU | 1x Corsair HX1500i, 20A 120V circuit |
-| OS / driver | Debian 13, kernel 6.12.95, NVIDIA 610.43.02, CUDA 13.3 |
+| OS / driver | Debian 13, kernel 6.12.101, NVIDIA 610.57.04, CUDA 13.3 |
 
 Memory Bandwidth:
 
@@ -59,36 +61,37 @@ PCIe Speed (between GPU pairs):
 
 ## Model
 
-- [deepseek-ai/DeepSeek-V4-Flash-0731](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731)
-  (284B params, 13B active per token, 1M-token context)
-- fp8 (block-scaled dense layers + MXFP4 MoE experts); ~167 GB checkpoint on
-  disk, served from `/models/deepseek-ai/DeepSeek-V4-Flash-0731` on the local
-  models mount
+- [zai-org/GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)
+  (`Glm5NextForConditionalGeneration`, sparse-MLA MoE, 1M-token context, native
+  vision: 448px tiles / patch 14 / 256 tokens per tile)
+- 62-shard checkpoint served from `/models/zai-org/GLM-5.3-Flash` on the local
+  models mount; SM120 serving path is the hardware-verified fp8 + FlashInfer
+  NoPE sparse-MLA port (see `notes/serving-config.md`)
+- Previous models on this rig: DeepSeek-V4-Flash-0731, MiniMax-M3-NVFP4
 
 ## vLLM Build
 
-Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm).
-Upstream-tracking, rebased onto v0.27.1 which supports DeepSeek-V4 natively.
-The ocnr SM120-specific config (`0.27.1+sm120.cu133`) sits on top.
+Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
+branch `0.29`, tagged `0.29.0-sm120-cu130` (vLLM v0.29.0 base).
 
 Build constraints:
 
 - GPUs are SM 12.0 (Blackwell consumer). `TORCH_CUDA_ARCH_LIST="12.0"`.
-- Several SM120 kernels (DeepGEMM fp8 MoE, TileLang, FlashInfer autotune) need
-  the matching CUDA toolchain; CUTLASS comes from the `nvidia-cutlass-dsl==4.5.2`
-  PyPI wheel (no tagged release ships the SM120 GEMM kernels).
+- Several SM120 kernel paths (DeepGEMM fp8 MoE, TileLang, FlashInfer runtime
+  JIT) need the matching CUDA toolchain; CUTLASS comes from the
+  `nvidia-cutlass-dsl==4.6.2` PyPI wheel.
 - FlashInfer and TileLang JIT kernels at server startup (the boot log shows
   TileLang compiling `mhc_pre_big_fuse_*` on each worker). The `cuda-nvrtc-dev`
   package must be in the runtime image, not just the build image, or the server
   fails to boot.
 
 ```bash
-git clone --branch 0.27 https://github.com/nick-oconnor/vllm.git
+git clone --branch 0.29 https://github.com/nick-oconnor/vllm.git
 cd vllm
-docker build -f docker/Dockerfile -t vllm:0.27.1-sm120-cu133 .
+docker build -f docker/Dockerfile -t vllm:0.29.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.27.1-sm120-cu133](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.27.1-sm120-cu133).
+Pre-built amd64 image: [ngpitt/vllm:0.29.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.29.0-sm120-cu130).
 
 ## vLLM Execution
 
@@ -111,40 +114,32 @@ docker run --rm --gpus all --shm-size 120g \
 # host-side barrier after OffloadingConnector.start_load_kv to prevent the
 # TP rank desync on KV load
   -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \
-  vllm:0.27.1-sm120-cu133 \
-    /models/deepseek-ai/DeepSeek-V4-Flash-0731 \
-      --served-model-name DeepSeek-V4-Flash-0731 \
+  vllm:0.29.0-sm120-cu130 \
+    /models/zai-org/GLM-5.3-Flash \
+      --served-model-name GLM-5.3-Flash \
 # 4-way TP across the four GPUs
       --tensor-parallel-size 4 \
-# 256 routed MoE experts, sharded 64 per TP rank
       --enable-expert-parallel \
       --trust-remote-code \
-# DeepSeek-V4's custom encoder + tokenizer strategy (deepseek_v4)
-      --tokenizer-mode deepseek_v4 \
+      --disable-custom-all-reduce \
 # resolves to the full 1,048,576-token context; auto-fit confirms the
-# 1,581,597-token fp8 KV cache fits the whole 1M
+# ~7.95 GiB/GPU fp8 KV cache holds 1,100,441 tokens (1.05x concurrency)
       --max-model-len auto \
       --max-num-seqs 4 \
-      --max-num-batched-tokens 16384 \
-# deliberate: leaves ~30% GPU memory unallocated for co-resident workloads
-# on the box (comfyui), not for KV growth
-      --gpu-memory-utilization 0.7 \
-# model ships fp8 (block-scaled + MXFP4 MoE); fp8 KV cache matches it and
-# fits the 1M context
+      --max-num-batched-tokens 8192 \
+# keeps the full 1M with the vision stack resident
+      --gpu-memory-utilization 0.97 \
       --kv-cache-dtype fp8 \
 # 100 GiB host-RAM offload buffer; speeds up long-context requests under
 # concurrent load
       --kv-offloading-size 100 \
       --kv-offloading-backend native \
-# DeepSeek-V4's compressed sparse-MLA cache has heterogeneous block groups;
-# 256 is the full-MLA group (SWA=64, C4 states=4, C128 states=8 are derived
-# internally)
-      --block-size 256 \
       --enable-prefix-caching \
       --enable-chunked-prefill \
-      --tool-call-parser deepseek_v4 \
-      --reasoning-parser deepseek_v4 \
+      --tool-call-parser glm47 \
+      --reasoning-parser glm45 \
       --enable-auto-tool-choice \
+      --limit-mm-per-prompt '{"image": 1, "video": 0}' \
 # force thinking mode on every turn
       --default-chat-template-kwargs '{"thinking": true}'
 ```
