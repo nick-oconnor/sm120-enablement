@@ -10,15 +10,15 @@ and MiniMax-M3-NVFP4 — their configs live in
 
 ## Benchmarks
 
-GLM-5.3-Flash, vLLM `0.29.0-sm120-cu130` (2026-08-29). 16 prompts, concurrency 4,
-random dataset, zero failed requests.
+GLM-5.3-Flash, vLLM `0.29.0-sm120-cu130` with the b12x PCIe one-shot all-reduce
+(2026-09-02). 16 prompts, concurrency 1, random dataset, zero failed requests.
 
-| Input Tokens | Output Tokens | Decode (tok/s) | p50 TTFT  | p50 ITL  |
+| Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 182            | 677ms     | 19ms     |
-| 8192      | 1024       | 181            | 1716ms    | 19ms     |
-| 32768     | 4096       | 184            | 6467ms    | 19ms     |
-| 131072    | 8192       | 150            | 20395ms   | 20ms     |
+| 2048      | 256        | 88.3           | 225ms     | 10.48ms  |
+| 8192      | 1024       | 88.7           | 814ms     | 10.50ms  |
+| 32768     | 4096       | 88.9           | 3112ms    | 10.49ms  |
+| 131072    | 8192       | 84.0           | 9977ms    | 10.63ms  |
 
 PSU output (self-reported via the PSU's USB interface): 234W idle, 1.28kW under bench load, 1.76kW peak.
 
@@ -80,6 +80,8 @@ Build constraints:
 - Several SM120 kernel paths (DeepGEMM fp8 MoE, TileLang, FlashInfer runtime
   JIT) need the matching CUDA toolchain; CUTLASS comes from the
   `nvidia-cutlass-dsl==4.6.2` PyPI wheel.
+- **b12x** comes from the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot
+  all-reduce kernels (`b12x.comm.pcie`); no native extension build.
 - FlashInfer and TileLang JIT kernels at server startup (the boot log shows
   TileLang compiling `mhc_pre_big_fuse_*` on each worker). The `cuda-nvrtc-dev`
   package must be in the runtime image, not just the build image, or the server
@@ -114,6 +116,8 @@ docker run --rm --gpus all --shm-size 120g \
 # host-side barrier after OffloadingConnector.start_load_kv to prevent the
 # TP rank desync on KV load
   -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \
+# b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
+  -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
   vllm:0.29.0-sm120-cu130 \
     /models/zai-org/GLM-5.3-Flash \
       --served-model-name GLM-5.3-Flash \
@@ -121,7 +125,6 @@ docker run --rm --gpus all --shm-size 120g \
       --tensor-parallel-size 4 \
       --enable-expert-parallel \
       --trust-remote-code \
-      --disable-custom-all-reduce \
 # resolves to the full 1,048,576-token context; auto-fit confirms the
 # ~7.95 GiB/GPU fp8 KV cache holds 1,100,441 tokens (1.05x concurrency)
       --max-model-len auto \

@@ -7,6 +7,9 @@ Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for
 - **CUDA 13.0** runtime + toolchain (so JIT kernels compile at server startup — `cuda-nvrtc-dev` is in the runtime layer, not just the build layer)
 - **FlashInfer** via the `flashinfer-jit-cache==0.6.17` wheel from the flashinfer.ai index, plus `set_autotune_process_group` (Xid-69 fix)
 - **CUTLASS** via the `nvidia-cutlass-dsl==4.6.2` PyPI wheel (SM120 GEMM kernels)
+- **b12x** via the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot all-reduce
+  (`b12x.comm.pcie`); enabled per-deployment with `VLLM_ENABLE_PCIE_ALLREDUCE=1`
+  (replaces NCCL-SHM for decode-size collectives at TP>2 on PCIe-only boxes)
 - **KV-offload collective barrier** patch — `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1` keeps TP ranks in sync when KV is reloaded from host RAM (otherwise the offload path deadlocks; see [`notes/incident-kv-offload-deadlock.md`](https://github.com/nick-oconnor/sm120-enablement/blob/main/notes/incident-kv-offload-deadlock.md))
 - **FlashInfer autotune wire-up** in warmup — `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1` forces every rank into the autotune context so the autotune all-reduce doesn't hang on missing peers at long context (see [`notes/incident-longcontext-xid69.md`](https://github.com/nick-oconnor/sm120-enablement/blob/main/notes/incident-longcontext-xid69.md))
 - **py-spy + `dump-jam-state.sh`** pre-installed for incident diagnostics (dumps py-spy traces, `nvidia-smi`, and dmesg Xid lines)
@@ -26,11 +29,11 @@ docker run --rm --gpus all --shm-size 120g \
   -e MAX_JOBS=32 \
   -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \
   -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \
+  -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
   vllm:0.29.0-sm120-cu130 \
     /models/zai-org/GLM-5.3-Flash \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \
-      --disable-custom-all-reduce \
       --enable-expert-parallel \
       --trust-remote-code \
       --max-model-len auto \

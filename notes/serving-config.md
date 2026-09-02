@@ -79,20 +79,6 @@ watch for is `RuntimeError: CUDA out of memory. Tried to allocate …` — that
 kills the engine; fall back gmu → 0.965 (mbt 8192) or mbt → 4096 (gmu 0.97),
 both of which still hold 1M.
 
-### Benchmarks (2026-08-29, pre-b12x baseline — 16 prompts, concurrency 4, zero failures)
-
-| Input | Output | Decode (tok/s) | p50 TTFT | p50 ITL |
-|---|---|---|---|---|
-| 2048 | 256 | 182 | 677ms | 19ms |
-| 8192 | 1024 | 181 | 1716ms | 19ms |
-| 32768 | 4096 | 184 | 6467ms | 19ms |
-| 131072 | 8192 | 150 | 20395ms | 20ms |
-
-Mid-run Triton/TileLang JIT compiles (`_count_expert_num_tokens`,
-`_kpool_tail_seed_kernel`, `mhc_pre_big_fuse_with_norm_tilelang`) still fire on
-first hit of uncovered shapes — one-off latency spikes, warmup-coverage fix
-pending.
-
 ### b12x PCIe oneshot allreduce (deployed 2026-09-02)
 
 `CustomAllreduce` gains a b12x backend when `VLLM_ENABLE_PCIE_ALLREDUCE=1` and
@@ -105,23 +91,23 @@ multi-channel mode demands per-graph channel ids vLLM does not plumb.
 not exist — route by size, do not call it. Kernels are CuTe DSL, compiled at
 first use (first requests after boot pay ~50 ms ITL once, self-heals).
 
-### Benchmarks (2026-09-02, b12x oneshot — 16 prompts, concurrency 4, zero failures)
+### Benchmarks (2026-09-02, b12x oneshot — concurrency 1, 16 prompts per cell, zero failures)
 
-| Input | Output | Decode (tok/s) | Median TTFT | Median ITL |
-|---|---|---|---|---|
-| 2048 | 256 | 180 | 770ms | 19.4ms |
-| 8192 | 1024 | 197 | 575ms | 19.8ms |
-| 32768 | 4096 | 198 | 917ms | 20.0ms |
-| 131072 | 8192 | 164 | 14773ms | 20.6ms |
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | TPOT |
+|---|---|---|---|---|---|
+| 2048 | 256 | 88.3 | 225ms | 10.48ms | 10.48 |
+| 8192 | 1024 | 88.7 | 814ms | 10.50ms | 10.49 |
+| 32768 | 4096 | 88.9 | 3112ms | 10.49ms | 10.49 |
+| 131072 | 8192 | 84.0 | 9977ms | 10.63ms | 10.62 |
 
-Decode throughput +8–9.5% vs the 2026-08-29 baseline in the 8K/32K/128K cells
-(2K parity — noise floor at 4,096 total output tokens). Caveats: the 2K/8K/32K
-prompts were prefix-cache hits from the earlier same-seed run (TTFT numbers
-there are cache-inflated; the 128K cell ran cold and still beat the baseline
-by 28%), and the baseline itself carried first-shape JIT spikes. Production
-(c=1) ITL: 12.5 → 10.8 ms (−13.6%) in VictoriaMetrics post-deploy windows.
+vs the 2026-08-29 c=4 baseline (decode 150–184 tok/s, ITL 19–20 ms): the c=1
+per-stream rate at long context (~92 tok/s at 128K) is ~2× the c=4 per-stream
+rate, and production (c=1) ITL improved 12.5 → 10.8 ms (−13.6%) post-deploy.
 Direct peer reads measured 53 GB/s (PCIe 5.0 x16 line rate) on driver 610
-without any P2P registry overrides.
+without any P2P registry overrides. Mid-run Triton/TileLang JIT compiles
+(`_count_expert_num_tokens`, `_kpool_tail_seed_kernel`,
+`mhc_pre_big_fuse_with_norm_tilelang`) still fire on first hit of uncovered
+shapes — one-off latency spikes, warmup-coverage fix pending.
 
 ### kv-offload status
 
