@@ -1,19 +1,19 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash — current (validated 2026-08-29)
+## GLM-5.3-Flash — current (validated 2026-09-02, b12x PCIe oneshot allreduce)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
-`registry.ocnr.org/infra/vllm:0.29.0-sm120-cu130@sha256:29005b58…` built from
-the fork's `0.29` branch (`d1fc212696`), which includes the
-hardware-verified SM120 GLM-5.3 port (fp8 + FlashInfer NoPE sparse MLA) and
-the 2026-08-28 kv-offload fix series.
+`registry.ocnr.org/infra/vllm:0.29.0-sm120-cu130@sha256:ff25e8dc…` built from
+the fork's `0.29` branch (`7d0935e921`, squashed b12x commit on `d1fc212696`),
+which includes the hardware-verified SM120 GLM-5.3 port (fp8 + FlashInfer NoPE
+sparse MLA), the 2026-08-28 kv-offload fix series, and the b12x PCIe oneshot
+allreduce integration (b12x 1.3.0, CuTe DSL — no native extension build).
 
 ```
 vllm serve /models/zai-org/GLM-5.3-Flash \
   --served-model-name GLM-5.3-Flash \
   --trust-remote-code \
   --tensor-parallel-size 4 \
-  --disable-custom-all-reduce \
   --enable-expert-parallel \
   --max-model-len auto \
   --max-num-seqs 4 \
@@ -33,7 +33,9 @@ vllm serve /models/zai-org/GLM-5.3-Flash \
 
 Env: `HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`,
 `OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
-`VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1`, `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`).
+`VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1`, `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`,
+`VLLM_ENABLE_PCIE_ALLREDUCE=1` (b12x oneshot replaces NCCL-SHM for decode-size
+all-reduces; >8 MiB prefill collectives stay on NCCL).
 Keep CUDA graph memory profiling enabled (v0.21+ default, don't set
 `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0` — see *Allocator flush-retry
 warnings* below).
@@ -77,7 +79,7 @@ watch for is `RuntimeError: CUDA out of memory. Tried to allocate …` — that
 kills the engine; fall back gmu → 0.965 (mbt 8192) or mbt → 4096 (gmu 0.97),
 both of which still hold 1M.
 
-### Benchmarks (2026-08-29, 16 prompts, concurrency 4, zero failures)
+### Benchmarks (2026-08-29, pre-b12x baseline — 16 prompts, concurrency 4, zero failures)
 
 | Input | Output | Decode (tok/s) | p50 TTFT | p50 ITL |
 |---|---|---|---|---|
@@ -90,6 +92,36 @@ Mid-run Triton/TileLang JIT compiles (`_count_expert_num_tokens`,
 `_kpool_tail_seed_kernel`, `mhc_pre_big_fuse_with_norm_tilelang`) still fire on
 first hit of uncovered shapes — one-off latency spikes, warmup-coverage fix
 pending.
+
+### b12x PCIe oneshot allreduce (deployed 2026-09-02)
+
+`CustomAllreduce` gains a b12x backend when `VLLM_ENABLE_PCIE_ALLREDUCE=1` and
+b12x ≥ 1.3.0 is installed: the oneshot pool replaces the legacy custom-AR path
+at TP>2 PCIe-only (the stock `world_size > 2` gate is bypassed), routing by
+size (≤ `max_size` → oneshot, else NCCL). Capture uses `single_channel=True` —
+one semantic channel for the whole vLLM graph-capture phase; distributed
+multi-channel mode demands per-graph channel ids vLLM does not plumb.
+`PCIeAllReduce.should_allreduce` on b12x delegates to a pool method that does
+not exist — route by size, do not call it. Kernels are CuTe DSL, compiled at
+first use (first requests after boot pay ~50 ms ITL once, self-heals).
+
+### Benchmarks (2026-09-02, b12x oneshot — 16 prompts, concurrency 4, zero failures)
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL |
+|---|---|---|---|---|
+| 2048 | 256 | 180 | 770ms | 19.4ms |
+| 8192 | 1024 | 197 | 575ms | 19.8ms |
+| 32768 | 4096 | 198 | 917ms | 20.0ms |
+| 131072 | 8192 | 164 | 14773ms | 20.6ms |
+
+Decode throughput +8–9.5% vs the 2026-08-29 baseline in the 8K/32K/128K cells
+(2K parity — noise floor at 4,096 total output tokens). Caveats: the 2K/8K/32K
+prompts were prefix-cache hits from the earlier same-seed run (TTFT numbers
+there are cache-inflated; the 128K cell ran cold and still beat the baseline
+by 28%), and the baseline itself carried first-shape JIT spikes. Production
+(c=1) ITL: 12.5 → 10.8 ms (−13.6%) in VictoriaMetrics post-deploy windows.
+Direct peer reads measured 53 GB/s (PCIe 5.0 x16 line rate) on driver 610
+without any P2P registry overrides.
 
 ### kv-offload status
 
