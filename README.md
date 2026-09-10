@@ -72,7 +72,9 @@ PCIe Speed (between GPU pairs):
 ## vLLM Build
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
-branch `0.29`, tagged `0.29.0-sm120-cu130` (vLLM v0.29.0 base).
+branch `0.29`, tagged `0.29.0-sm120-cu130` (upstream `0.29`-era base —
+GLM-5.3-Flash model support is native upstream since vllm-project #53906; the
+branch carries the ocnr SM120 NoPE port and kv-offload fixes).
 
 Build constraints:
 
@@ -126,7 +128,7 @@ docker run --rm --gpus all --shm-size 120g \
       --enable-expert-parallel \
       --trust-remote-code \
 # resolves to the full 1,048,576-token context; auto-fit confirms the
-# ~7.95 GiB/GPU fp8 KV cache holds 1,100,441 tokens (1.05x concurrency)
+# ~7.91 GiB/GPU fp8 KV cache holds 1,095,931 tokens (1.05x concurrency)
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \

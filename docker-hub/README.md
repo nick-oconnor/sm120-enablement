@@ -3,9 +3,15 @@ Standalone [vLLM‎](https://github.com/nick-oconnor/vllm) inference image for t
 Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision) as of the `0.29.0-sm120-cu130` build; **DeepSeek-V4-Flash-0731** (fp8 MoE) was the `0.27.1-sm120-cu133` target. DeepGEMM is compiled in-image and TileLang builds from sdist; FlashInfer ships as the `flashinfer-jit-cache` wheel and CUTLASS from the `nvidia-cutlass-dsl` wheel — kernels the cache doesn't cover JIT at server startup, so `cuda-nvrtc-dev` ships in the runtime layer.
 
 #### Image Contents
-- **vLLM** from the fork's `0.29` branch (built and tagged as `0.29.0-sm120-cu130`), with the ocnr SM120 GLM-5.3 port (fp8 + FlashInfer NoPE sparse MLA) and the 2026-08-28 kv-offload fix series on top; FlashInfer pinned to `0.6.17` (`0.6.18` is not on the index)
+- **vLLM** built from upstream `main` (`0.29`-era; rebuilt 2026-09-09 onto
+  upstream, tagged `0.29.0-sm120-cu130`) — **GLM-5.3-Flash model support is
+  native upstream** since vllm-project #53906, so no fork overlay is needed;
+  the ocnr commits on top are the SM120 NoPE sparse-MLA port (fp8 +
+  FlashInfer zero-pad, backend priority, indexer buffer pin) and the
+  kv-offload fix series (collective barrier, GPU-resident non-participating
+  groups), plus upstream's own kv-offload shm fix (#52596)
 - **CUDA 13.0** runtime + toolchain (so JIT kernels compile at server startup — `cuda-nvrtc-dev` is in the runtime layer, not just the build layer)
-- **FlashInfer** via the `flashinfer-jit-cache==0.6.17` wheel from the flashinfer.ai index, plus `set_autotune_process_group` (Xid-69 fix)
+- **FlashInfer** via the `flashinfer-jit-cache==0.6.18.post1` wheel from the flashinfer.ai index (upstream's own pin; `0.6.18` is now published), plus `set_autotune_process_group` (Xid-69 fix)
 - **CUTLASS** via the `nvidia-cutlass-dsl==4.6.2` PyPI wheel (SM120 GEMM kernels)
 - **b12x** via the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot all-reduce
   (`b12x.comm.pcie`); enabled per-deployment with `VLLM_ENABLE_PCIE_ALLREDUCE=1`
