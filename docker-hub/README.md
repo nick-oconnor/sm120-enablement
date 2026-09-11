@@ -25,7 +25,7 @@ Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for
 ```bash
 docker run --rm --gpus all --shm-size 120g \
   -v <host-models-path>:/models:ro \
-  -v <host-cache path>:/home/vllm \
+  -v <host-cache-path>:/home/vllm \
   -p 8000:8000 \
   -e HF_HUB_OFFLINE=1 \
   -e NCCL_P2P_LEVEL=NODE \
