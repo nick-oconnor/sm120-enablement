@@ -10,15 +10,16 @@ and MiniMax-M3-NVFP4 — their configs live in
 
 ## Benchmarks
 
-GLM-5.3-Flash, vLLM `0.29.0-sm120-cu130` with the b12x PCIe one-shot all-reduce
-(2026-09-02). 16 prompts, concurrency 1, random dataset, zero failed requests.
+GLM-5.3-Flash, vLLM `0.29.0-sm120-cu130` no-offload build with the b12x PCIe
+one-shot all-reduce (2026-09-11). 16 prompts, concurrency 1, random dataset,
+zero failed requests.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 88.3           | 225ms     | 10.48ms  |
-| 8192      | 1024       | 88.7           | 814ms     | 10.50ms  |
-| 32768     | 4096       | 88.9           | 3112ms    | 10.49ms  |
-| 131072    | 8192       | 84.0           | 9977ms    | 10.63ms  |
+| 2048      | 256        | 89.04          | 241ms     | 10.33ms  |
+| 8192      | 1024       | 89.40          | 877ms     | 10.34ms  |
+| 32768     | 4096       | 89.71          | 3300ms    | 10.34ms  |
+| 131072    | 8192       | 82.09          | 14270ms   | 10.48ms  |
 
 PSU output (self-reported via the PSU's USB interface): 234W idle, 1.28kW under bench load, 1.76kW peak.
 

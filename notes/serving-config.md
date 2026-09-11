@@ -95,17 +95,17 @@ multi-channel mode demands per-graph channel ids vLLM does not plumb.
 not exist — route by size, do not call it. Kernels are CuTe DSL, compiled at
 first use (first requests after boot pay ~50 ms ITL once, self-heals).
 
-### Benchmarks (2026-09-02, b12x oneshot — concurrency 1, 16 prompts per cell, zero failures)
+### Benchmarks (2026-09-11, no-offload build, b12x oneshot — concurrency 1, 16 prompts per cell, zero failures)
 
 | Input | Output | Decode (tok/s) | Median TTFT | Median ITL | TPOT |
 |---|---|---|---|---|---|
-| 2048 | 256 | 88.3 | 225ms | 10.48ms | 10.48 |
-| 8192 | 1024 | 88.7 | 814ms | 10.50ms | 10.49 |
-| 32768 | 4096 | 88.9 | 3112ms | 10.49ms | 10.49 |
-| 131072 | 8192 | 84.0 | 9977ms | 10.63ms | 10.62 |
+| 2048 | 256 | 89.04 | 241ms | 10.33ms | 10.33 |
+| 8192 | 1024 | 89.40 | 877ms | 10.34ms | 10.34 |
+| 32768 | 4096 | 89.71 | 3300ms | 10.34ms | 10.34 |
+| 131072 | 8192 | 82.09 | 14270ms | 10.48ms | 10.47 |
 
 vs the 2026-08-29 c=4 baseline (decode 150–184 tok/s, ITL 19–20 ms): the c=1
-per-stream rate at long context (~92 tok/s at 128K) is ~2× the c=4 per-stream
+per-stream rate at long context (82 tok/s at 128K) is ~2× the c=4 per-stream
 rate, and production (c=1) ITL improved 12.5 → 10.8 ms (−13.6%) post-deploy.
 Direct peer reads measured 53 GB/s (PCIe 5.0 x16 line rate) on driver 610
 without any P2P registry overrides. Mid-run Triton/TileLang JIT compiles
