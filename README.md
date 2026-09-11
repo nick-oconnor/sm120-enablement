@@ -74,7 +74,7 @@ PCIe Speed (between GPU pairs):
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
 branch `0.29`, tagged `0.29.0-sm120-cu130` (upstream `0.29`-era base —
 GLM-5.3-Flash model support is native upstream since vllm-project #53906; the
-branch carries the ocnr SM120 NoPE port and kv-offload fixes).
+branch carries the ocnr SM120 NoPE port).
 
 Build constraints:
 
@@ -115,9 +115,6 @@ docker run --rm --gpus all --shm-size 120g \
   -e MAX_JOBS=32 \
 # sync FlashInfer autotune tactic choice across TP ranks during warmup
   -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \
-# host-side barrier after OffloadingConnector.start_load_kv to prevent the
-# TP rank desync on KV load
-  -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \
 # b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
   vllm:0.29.0-sm120-cu130 \
@@ -135,10 +132,6 @@ docker run --rm --gpus all --shm-size 120g \
 # keeps the full 1M with the vision stack resident
       --gpu-memory-utilization 0.97 \
       --kv-cache-dtype fp8 \
-# 100 GiB host-RAM offload buffer; speeds up long-context requests under
-# concurrent load
-      --kv-offloading-size 100 \
-      --kv-offloading-backend native \
       --enable-prefix-caching \
       --enable-chunked-prefill \
       --tool-call-parser glm47 \

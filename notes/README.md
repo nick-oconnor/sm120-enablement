@@ -1,8 +1,10 @@
-# ocnr notes — MiniMax-M3-NVFP4 on SM120
+# ocnr notes — vLLM on SM120
 
-Operational deep-dive for serving **`nvidia/MiniMax-M3-NVFP4`** on the ocnr vLLM
-fork — the build/deploy config and
-production-incident post-mortems behind the top-level [writeup](../README.md).
+Operational deep-dive behind the top-level [writeup](../README.md): the
+current serving config (GLM-5.3-Flash, see
+[`serving-config.md`](serving-config.md)) and production-incident
+post-mortems. The M3-era sections below (hardware table as of 2026-08,
+vLLM `0.25.1+sm120.cu131`) are historical.
 
 ## Hardware / platform
 
@@ -57,20 +59,21 @@ production-incident post-mortems behind the top-level [writeup](../README.md).
   root-caused by local docker bisection to upstream **PR #47502** (M3 sparse-attn
   indexer / token-major `topk_indices_buffer`); reverted on `next`. The MoE crash
   was a downstream report; corruption originated in the sparse-attention indexer.
+- [`incident-kv-offload-cache-corruption.md`](incident-kv-offload-cache-corruption.md)
+  — silent progressive KV-cache corruption on GLM-5.3-Flash with APC + native
+  offloading (garbled output, then empty responses; all finishes reported as
+  clean `stop`). **Resolved** — offload patches dropped from the branch and
+  flags removed in production 2026-09-11; fingerprint matches upstream #50454.
 
 ## TL;DR current status
 
-- **Serving works**: full 1M context, fp8 KV + Triton attn + EP + flashinfer_cutlass
-  NVFP4 MoE, tool calls + reasoning validated. See `serving-config.md`.
-- **Current production = `0.25.1`** (fork `next` branch). The `0.24.0`→`0.25.1`
-  upgrade first crashed multi-sequence prefills in the NVFP4 MoE `gemm2`; root
-  cause was upstream PR #47502 (M3 sparse-attn indexer), **reverted** on `next`
-  and now deployed. See `incident-v0251-sparse-attn-regression.md`.
-- **KV offloading**: **deployed**. Offload flags re-enabled in
-  `stage3/apps/vllm.yaml` (`56d81ffc`, 2026-07-11) with the rank-desync
-  fix activated via `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`. See
-  `incident-kv-offload-deadlock.md` for the timeline and validation status.
-- **Xid-69 crash**: open — **fix candidate deployed**. FlashInfer pin past
+- **Serving (current)**: GLM-5.3-Flash on `0.29.0-sm120-cu130` (image
+  `94a85a96`, branch `bea5f74795`), full 1M context, fp8 KV, b12x PCIe
+  one-shot all-reduce. See `serving-config.md`.
+- **KV offloading**: **removed** (2026-09-11) after silent cache corruption on
+  the previous build. See `incident-kv-offload-cache-corruption.md`; the M3-era
+  deadlock note below covers the earlier 2026-07 episode.
+- **Xid-69 crash (M3-era)**: open — **fix candidate deployed**. FlashInfer pin past
   PR #3187 (`2c0d595f`) + `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1` wire-up
   shipped 2026-07-10/11. Caveat: only addresses the FlashInfer-autotune
   failure path; the Triton `_topk_index_kernel` path remains unaddressed.

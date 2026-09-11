@@ -4,19 +4,18 @@ Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for
 
 #### Image Contents
 - **vLLM** built from upstream `main` (`0.29`-era; rebuilt 2026-09-09 onto
-  upstream, tagged `0.29.0-sm120-cu130`) — **GLM-5.3-Flash model support is
-  native upstream** since vllm-project #53906, so no fork overlay is needed;
-  the ocnr commits on top are the SM120 NoPE sparse-MLA port (fp8 +
-  FlashInfer zero-pad, backend priority, indexer buffer pin) and the
-  kv-offload fix series (collective barrier, GPU-resident non-participating
-  groups), plus upstream's own kv-offload shm fix (#52596)
+  upstream, tagged `0.29.0-sm120-cu130`, no-offload rebuild 2026-09-11) —
+  **GLM-5.3-Flash model support is native upstream** since vllm-project
+  #53906, so no fork overlay is needed; the ocnr commits on top are the SM120
+  NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend priority, indexer
+  buffer pin), plus upstream's own kv-offload shm fix (#52596). KV offloading
+  is not patched and not enabled (see the cache-corruption incident note)
 - **CUDA 13.0** runtime + toolchain (so JIT kernels compile at server startup — `cuda-nvrtc-dev` is in the runtime layer, not just the build layer)
 - **FlashInfer** via the `flashinfer-jit-cache==0.6.18.post1` wheel from the flashinfer.ai index (upstream's own pin; `0.6.18` is now published), plus `set_autotune_process_group` (Xid-69 fix)
 - **CUTLASS** via the `nvidia-cutlass-dsl==4.6.2` PyPI wheel (SM120 GEMM kernels)
 - **b12x** via the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot all-reduce
   (`b12x.comm.pcie`); enabled per-deployment with `VLLM_ENABLE_PCIE_ALLREDUCE=1`
   (replaces NCCL-SHM for decode-size collectives at TP>2 on PCIe-only boxes)
-- **KV-offload collective barrier** patch — `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1` keeps TP ranks in sync when KV is reloaded from host RAM (otherwise the offload path deadlocks; see [`notes/incident-kv-offload-deadlock.md`](https://github.com/nick-oconnor/sm120-enablement/blob/main/notes/incident-kv-offload-deadlock.md))
 - **FlashInfer autotune wire-up** in warmup — `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1` forces every rank into the autotune context so the autotune all-reduce doesn't hang on missing peers at long context (see [`notes/incident-longcontext-xid69.md`](https://github.com/nick-oconnor/sm120-enablement/blob/main/notes/incident-longcontext-xid69.md))
 - **py-spy + `dump-jam-state.sh`** pre-installed for incident diagnostics (dumps py-spy traces, `nvidia-smi`, and dmesg Xid lines)
 - `TORCH_CUDA_ARCH_LIST="12.0"` — only SM120 gets built, so the image is smaller than the upstream `vllm/vllm` images that target every arch
@@ -34,7 +33,6 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \
-  -e VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1 \
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
   vllm:0.29.0-sm120-cu130 \
     /models/zai-org/GLM-5.3-Flash \
@@ -47,8 +45,6 @@ docker run --rm --gpus all --shm-size 120g \
       --max-num-batched-tokens 8192 \
       --gpu-memory-utilization 0.97 \
       --kv-cache-dtype fp8 \
-      --kv-offloading-size 100 \
-      --kv-offloading-backend native \
       --enable-prefix-caching \
       --enable-chunked-prefill \
       --tool-call-parser glm47 \

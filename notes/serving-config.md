@@ -1,17 +1,17 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash — current (2026-09-09 rebuild re-validated; b12x PCIe oneshot allreduce)
+## GLM-5.3-Flash — current (2026-09-11 no-offload rebuild; b12x PCIe oneshot allreduce)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
-`registry.ocnr.org/infra/vllm:0.29.0-sm120-cu130@sha256:e593bc5a…` built from
-the `0.29` branch (`3343ab4276`, 2026-09-09 rebuild onto upstream vLLM `main` —
+`registry.ocnr.org/infra/vllm:0.29.0-sm120-cu130@sha256:94a85a96…` built from
+the `0.29` branch (`bea5f74795`, 2026-09-09 rebuild onto upstream vLLM `main` —
 GLM-5.3-Flash model support is native upstream since vllm-project #53906, the
 ZJY0516 fork is retired). On top of upstream: the ocnr SM120 NoPE sparse-MLA
-port (fp8 + FlashInfer zero-pad, backend priority, buffer pin), the kv-offload
-fix series (collective barrier, GPU-resident non-participating groups), the
+port (fp8 + FlashInfer zero-pad, backend priority, buffer pin), the
 b12x PCIe oneshot allreduce integration (b12x 1.3.0, CuTe DSL — no native
 extension build), and upstream's own fixes landing in the same window
-(vllm-project #52596 shm unlink, flashinfer `0.6.18.post1`).
+(vllm-project #52596 shm unlink, flashinfer `0.6.18.post1`). KV offloading is
+not carried and not enabled (see *kv-offload status* below).
 
 ```
 vllm serve /models/zai-org/GLM-5.3-Flash \
@@ -24,8 +24,6 @@ vllm serve /models/zai-org/GLM-5.3-Flash \
   --max-num-batched-tokens 8192 \
   --gpu-memory-utilization 0.97 \
   --kv-cache-dtype fp8 \
-  --kv-offloading-size 100 \
-  --kv-offloading-backend native \
   --enable-prefix-caching \
   --enable-chunked-prefill \
   --tool-call-parser glm47 \
@@ -37,7 +35,7 @@ vllm serve /models/zai-org/GLM-5.3-Flash \
 
 Env: `HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`,
 `OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
-`VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1`, `VLLM_KV_OFFLOAD_COLLECTIVE_BARRIER=1`,
+`VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1`,
 `VLLM_ENABLE_PCIE_ALLREDUCE=1` (b12x oneshot replaces NCCL-SHM for decode-size
 all-reduces; >8 MiB prefill collectives stay on NCCL).
 Keep CUDA graph memory profiling enabled (v0.21+ default, don't set
@@ -64,9 +62,10 @@ Per-GPU levers (1% of gmu ≈ 0.93 GiB on the 97,887 MiB cards):
 | CUDA graph reserve (profiling enabled) | −0.95 GiB vs profiling disabled |
 
 Final config `0.97 + mbt 8192` → 7.91 GiB → **1,095,931 tokens, full 1M with
-`image: 1` (1.05x concurrency)** (2026-09-09 rebuild boot; was 7.95 GiB /
-1,100,441 tokens on the fork build). A 1M request consumes ~95% of GPU KV;
-concurrent overflow spills to the 100 GiB offload tier. Forcing
+`image: 1` (1.05x concurrency)** (identical on the 2026-09-09 and 2026-09-11
+rebuild boots; was 7.95 GiB / 1,100,441 tokens on the fork build). A 1M request
+consumes ~95% of GPU KV; concurrent overflow preempts and recomputes (no
+offload tier since 2026-09-11). Forcing
 `--max-model-len 1048576` explicitly does *not* bypass the fit check — it
 raises a hard ValueError at startup while memory is short.
 
@@ -116,21 +115,23 @@ shapes — one-off latency spikes, warmup-coverage fix pending.
 
 ### kv-offload status
 
-**Enabled** (`--kv-offloading-size 100 --kv-offloading-backend native`) after
-the 2026-08-28 fix series (`d1fc212696`, one fix per assert surface):
-GLM-5.3's kpool-tail KV group (4-token blocks, opts out of
-prefix caching) broke every offload-connector invariant that assumes all
-groups are hash-chained; the series makes non-participating groups fully
-GPU-resident across config, store/load, lookup/match, and alloc accounting.
-The deadlock below was the pre-series state on the M3/0.25.1 build.
+**Disabled and no longer carried** (2026-09-11, build `94a85a96` from
+`bea5f74795`): the offload fix series from the fork build (collective barrier,
+GPU-resident non-participating groups) is dropped from the branch and the
+`--kv-offloading-*` flags are removed from production. Silent cache corruption
+surfaced on the `e593bc5a` build under sustained agentic load (progressive
+garbled output, then empty responses; every finish reported as a clean `stop`);
+the fingerprint matches the open upstream multi-group external-hit class
+(#50454, #53912). See `incident-kv-offload-cache-corruption.md`. The deadlock
+below was the pre-series state on the M3/0.25.1 build.
 
 ## MiniMax-M3-NVFP4 — historical (2026-08, superseded by GLM-5.3-Flash)
 
 Served at gmu 0.97 on the `0.25.1-sm120-cu131` image (full flag list in git
 history); full 1M context auto-fit at 1,136,384 KV tokens. **Do NOT add
 kv-offloading on this config** — see `incident-kv-offload-deadlock.md`.
-Superseded for GLM-5.3-Flash, where offloading is enabled after the
-2026-08-28 fix series (above).
+Superseded by GLM-5.3-Flash (offloading carried on that build after the
+2026-08-28 fix series, since removed — see *kv-offload status* above).
 
 Durable lessons from that bring-up:
 
