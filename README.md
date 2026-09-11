@@ -101,7 +101,8 @@ Pre-built amd64 image: [ngpitt/vllm:0.29.0-sm120-cu130](https://hub.docker.com/r
 ## vLLM Execution
 
 ```bash
-docker run --rm --gpus all --shm-size 120g \
+# NCCL bootstrap + engine IPC only; 21M measured after a 128K bench (was 120g legacy default)
+docker run --rm --gpus all --shm-size 8g \
   -v <host-models-path>:/models:ro \
   -v <host-cache-path>:/home/vllm \
   -p 8000:8000 \
