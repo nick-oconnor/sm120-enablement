@@ -1,4 +1,4 @@
-# Incident: silent KV-cache corruption under offloading — RESOLVED, offload removed
+# Incident: silent KV-cache corruption under offloading — root cause found (offloading was an amplifier, not the cause)
 
 ## Status
 
@@ -12,6 +12,23 @@
 - **2026-09-11** — offload patches dropped from the `0.29` branch, offload
   flags removed in production (`k8s-gitops` `d793fefe` + `6f0ff09a`); rebuilt
   image `94a85a96` (source `bea5f74795`) deployed
+- **2026-09-17** — corruption **recurred with offload disabled** (97.2–97.3%
+  local prefix-cache hit rate). This falsified the offload-connector
+  root-cause hypothesis in the sections below.
+- **2026-09-17** — **actual root cause identified**: upstream #55600 —
+  `MambaHybridModelState.add_request` seeds the KDA recurrent-state slot with
+  `(num_computed_tokens - 1) // cache_config.block_size`, but
+  `EngineCore._initialize_kv_caches` has by then lowered
+  `cache_config.block_size` to the smallest prefix-cacheable group
+  (GLM-5.3-Flash drafter/SWA group, 64) while mamba blocks are in KDA units
+  (3584 at TP4) — so **every prefix-cache hit, local or external/offload,
+  restores the wrong recurrent state**. Silent at small hit sizes; OOB
+  (`Xid 31`) at ≥8 mamba blocks in single-GPU configs. Fix = upstream PR
+  #55601 (open, 1-line: divide by `cache_config.mamba_block_size`), verified
+  upstream on GLM-5.3-Flash (warm hits == cold answers, multi-needle 5/5,
+  3 h soak). Offloading amplified exposure (external hits are hits too —
+  1,094,400 external-hit tokens in the degraded window), which is why
+  removing offload only reduced the rate instead of eliminating it.
 
 ## Symptom
 
@@ -40,19 +57,28 @@ the degraded window the offloader served 1,094,400 external (CPU) prefix-hit
 tokens; corruption scaled with cache-hit volume, consistent with upstream
 #53912.
 
-## Root cause (most likely)
+## Root cause (confirmed 2026-09-17)
 
-Per-group external-hit allocation in the rewritten `OffloadingConnector`
-scheduler: on an external (CPU) hit the recurrent (KDA) state group resumed
-misaligned with the sparse-MLA group, and the poisoned recurrent state (the
-model's compressed conversation memory) was served back on subsequent hits.
-Fingerprint matches the open upstream class "multi-group hybrid KV cache +
-connector external hit + eviction pressure" (#50454). Not proven to the line;
-removing offloading eliminated the failure path and is the deployed mitigation.
+Upstream **#55600** (fix: PR #55601, cherry-picked as `be9492b657`): the KDA
+recurrent-state slot seed on a prefix-cache hit is computed in the wrong
+units. The bug fires on **any** prefix-cache hit — local APC or external
+(offload) — which unifies both episodes: the 2026-09-10 offload-enabled
+corruption (external hits) and the 2026-09-17 no-offload recurrence (local
+hits at 97% hit rate). It also explains why the pre-0.29 fork build was
+clean: the `gpu/model_states/mamba_hybrid.py` align-mode seeding arrived with
+the 0.29 re-merge. The original "per-group external-hit allocation
+misalignment" hypothesis below was unproven and is superseded; #50454
+remains open upstream as a separate crash-class risk for offload, but is no
+longer blamed for this corruption.
+
+Superseded hypothesis: per-group external-hit allocation in the rewritten
+`OffloadingConnector` scheduler resumed the recurrent (KDA) state group
+misaligned with the sparse-MLA group.
 
 Amplifier (not cause): litellm's redis response cache (TTL 1h) cached one
 empty response; every client retry and the next session received the identical
-response id until TTL expiry, making the outage look total.
+response id until TTL expiry, making the outage look total. Flush redis on
+any restart that follows a corruption window.
 
 ## Evidence
 
@@ -70,9 +96,15 @@ response id until TTL expiry, making the outage look total.
 
 ## References
 
+- https://github.com/vllm-project/vllm/issues/55600 (root cause: hybrid mamba
+  state index seeded with the wrong block size on prefix-cache hits)
+- https://github.com/vllm-project/vllm/pull/55601 (the 1-line fix; open —
+  cherry-picked onto the ocnr `0.29` branch as `be9492b657`)
 - https://github.com/vllm-project/vllm/issues/50454 (multi-group + connector
-  external hit + eviction pressure; open)
+  external hit + eviction pressure; open — separate crash-class risk)
 - https://github.com/vllm-project/vllm/issues/53912 (corruption scales with
-  prefix-cache hit rate; reopened)
+  prefix-cache hit rate; reopened — MTP-gated variant, we run no MTP)
 - https://github.com/vllm-project/vllm/issues/52735 (OffloadingConnector
   store/serve asymmetry; closed)
+- https://github.com/gitcommit90/glm-5.3-one-spark/issues/3 (independent
+  reproduction + root-cause writeup on GLM-5.3-Flash, DGX Spark)

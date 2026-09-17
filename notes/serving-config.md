@@ -115,15 +115,40 @@ shapes — one-off latency spikes, warmup-coverage fix pending.
 
 ### kv-offload status
 
-**Disabled and no longer carried** (2026-09-11, build `94a85a96` from
-`bea5f74795`): the offload fix series from the fork build (collective barrier,
-GPU-resident non-participating groups) is dropped from the branch and the
-`--kv-offloading-*` flags are removed from production. Silent cache corruption
-surfaced on the `e593bc5a` build under sustained agentic load (progressive
-garbled output, then empty responses; every finish reported as a clean `stop`);
-the fingerprint matches the open upstream multi-group external-hit class
-(#50454, #53912). See `incident-kv-offload-cache-corruption.md`. The deadlock
-below was the pre-series state on the M3/0.25.1 build.
+**Re-enabled in production 2026-09-17** (`--kv-offloading-size 100
+--kv-offloading-backend native`, image `d6b7d2c6`, gitops `91b39a43`).
+Requires **dshm 120Gi** — the native CPUOffloadingSpec mmaps its 100 GiB pool
+in `/dev/shm` (`vllm_offload_*.mmap`); the 8Gi dshm set in `128c387a` (when
+offload was disabled) starves it and was reverted in the same commit. The
+2026-09-10 corruption was **not** caused by offloading — the root cause is
+upstream #55600 (KDA recurrent-state slot seeded in the wrong units on *any*
+prefix-cache hit, local or external); it recurred on the no-offload build at
+a 97% local hit rate. Post-deploy validation: cold vs warm answers byte
+identical on a 12,388-token prompt (≥3 mamba blocks); external-hit soak
+pending. See `incident-kv-offload-cache-corruption.md`.
+
+The `0.29` branch (`9789b7e59b`, 2026-09-17) now carries the fixes needed to
+re-enable offloading on GLM-5.3-Flash:
+
+- #55601 — seed hybrid mamba state index with `mamba_block_size` (the
+  corruption fix; 1-line, `mamba_hybrid.py`)
+- #54743 — scope offload group configs to prefix-cacheable groups (required
+  to boot the OffloadingConnector at all: the kpool-tail scratch group at
+  block size 4 fails the `tokens_per_block % tokens_per_hash` assert;
+  also excludes the DSA tail_cache from keying/loading)
+- #55450 — retire mamba states across null gaps (state-lifecycle hygiene,
+  merged upstream 2026-09-11, after our rebuild base)
+- #50388 — fix ValueError on KV load failure with a hybrid KV cache (error
+  path)
+
+The 0.28-era native KV fixes (#52771 zeroed hits under spec decode, #54288
+final-sampled-token slot, #51787 recency) were verified already present in
+the tree. Re-enable flags (previous production form):
+`--kv-offloading-size 100 --kv-offloading-backend native`. Residual open
+risk: #50454 (assert crash under multi-group external-hit + eviction
+pressure, no upstream fix) — worst case is a crash, not silent corruption.
+
+The deadlock below was the pre-series state on the M3/0.25.1 build.
 
 ## MiniMax-M3-NVFP4 — historical (2026-08, superseded by GLM-5.3-Flash)
 
