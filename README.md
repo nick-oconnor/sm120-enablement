@@ -12,7 +12,9 @@ and MiniMax-M3-NVFP4 — their configs live in
 
 GLM-5.3-Flash, vLLM `0.29.0-sm120-cu130` no-offload build with the b12x PCIe
 one-shot all-reduce (2026-09-11). 16 prompts, concurrency 1, random dataset,
-zero failed requests.
+zero failed requests. The current production build is `0.30.0-sm120-cu130`
+with native KV offload — the table below is the 09-11 no-offload baseline;
+a 0.30 re-bench is pending.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
@@ -73,16 +75,18 @@ PCIe Speed (between GPU pairs):
 ## vLLM Build
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
-branch `0.29`, tagged `0.29.0-sm120-cu130` (upstream `0.29`-era base —
-GLM-5.3-Flash model support is native upstream since vllm-project #53906; the
-branch carries the ocnr SM120 NoPE port).
+branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base past the
+v0.30.0rc1 fork, re-cut 2026-09-18 — GLM-5.3-Flash model support is native
+upstream since vllm-project #53906; the branch carries the ocnr SM120 NoPE
+port).
 
 Build constraints:
 
 - GPUs are SM 12.0 (Blackwell consumer). `TORCH_CUDA_ARCH_LIST="12.0"`.
 - Several SM120 kernel paths (DeepGEMM fp8 MoE, TileLang, FlashInfer runtime
   JIT) need the matching CUDA toolchain; CUTLASS comes from the
-  `nvidia-cutlass-dsl==4.6.2` PyPI wheel.
+  `nvidia-cutlass-dsl==4.7.1` PyPI wheel (upstream's requirement since the
+  DSL 4.7 bump).
 - **b12x** comes from the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot
   all-reduce kernels (`b12x.comm.pcie`); no native extension build.
 - FlashInfer and TileLang JIT kernels at server startup (the boot log shows
@@ -91,18 +95,18 @@ Build constraints:
   fails to boot.
 
 ```bash
-git clone --branch 0.29 https://github.com/nick-oconnor/vllm.git
+git clone --branch 0.30 https://github.com/nick-oconnor/vllm.git
 cd vllm
-docker build -f docker/Dockerfile -t vllm:0.29.0-sm120-cu130 .
+docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.29.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.29.0-sm120-cu130).
+Pre-built amd64 image: [ngpitt/vllm:0.29.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.29.0-sm120-cu130) (09-11 build; a 0.30.0 push is pending).
 
 ## vLLM Execution
 
 ```bash
-# NCCL bootstrap + engine IPC only; 21M measured after a 128K bench (was 120g legacy default)
-docker run --rm --gpus all --shm-size 8g \
+# NCCL bootstrap + engine IPC + the 100 GiB native KV-offload mmap
+docker run --rm --gpus all --shm-size 120g \
   -v <host-models-path>:/models:ro \
   -v <host-cache-path>:/home/vllm \
   -p 8000:8000 \
@@ -119,22 +123,24 @@ docker run --rm --gpus all --shm-size 8g \
   -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \
 # b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
-  vllm:0.29.0-sm120-cu130 \
+  vllm:0.30.0-sm120-cu130 \
     /models/zai-org/GLM-5.3-Flash \
       --served-model-name GLM-5.3-Flash \
 # 4-way TP across the four GPUs
       --tensor-parallel-size 4 \
       --enable-expert-parallel \
       --trust-remote-code \
-# resolves to the full 1,048,576-token context; auto-fit confirms the
-# ~7.91 GiB/GPU fp8 KV cache holds 1,095,931 tokens (1.05x concurrency)
+# auto-fit; NOTE the 09-18 0.30 boot cut this to 516,096 (3.81 GiB KV with
+# the offloader resident) — the pre-0.30 builds held the full 1M here
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-# keeps the full 1M with the vision stack resident
       --gpu-memory-utilization 0.97 \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
+# native CPU KV offload: 100 GiB pool mmap'd in /dev/shm
+      --kv-offloading-size 100 \
+      --kv-offloading-backend native \
       --enable-chunked-prefill \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
