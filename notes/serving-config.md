@@ -4,7 +4,7 @@
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
 `registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:11190e94…` built from
-the `0.30` branch (`31a7a53c1d`, 2026-09-18 re-cut onto upstream vLLM `main`
+the `0.30` branch (`0dfcc194c1`, 2026-09-18 re-cut onto upstream vLLM `main`
 past the v0.30.0rc1 fork — GLM-5.3-Flash model support is native upstream
 since vllm-project #53906, the ZJY0516 fork is retired). On top of upstream:
 the ocnr SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
@@ -130,7 +130,7 @@ a 97% local hit rate. Post-deploy validation: cold vs warm answers byte
 identical on a 12,388-token prompt (≥3 mamba blocks); external-hit soak
 pending. See `incident-kv-offload-cache-corruption.md`.
 
-The `0.30` branch (`31a7a53c1d`, 2026-09-18 re-cut onto upstream main past
+The `0.30` branch (`0dfcc194c1`, 2026-09-18 re-cut onto upstream main past
 v0.30.0rc1) carries what re-enabling offloading needs on GLM-5.3-Flash:
 
 - #55601 — seed hybrid mamba state index with `mamba_block_size` (the
