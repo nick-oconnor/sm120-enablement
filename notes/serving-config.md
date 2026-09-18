@@ -1,17 +1,17 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash — current (2026-09-11 no-offload rebuild; b12x PCIe oneshot allreduce)
+## GLM-5.3-Flash — current (2026-09-18 0.30 rebuild; native KV offload)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
-`registry.ocnr.org/infra/vllm:0.29.0-sm120-cu130@sha256:94a85a96…` built from
-the `0.29` branch (`bea5f74795`, 2026-09-09 rebuild onto upstream vLLM `main` —
-GLM-5.3-Flash model support is native upstream since vllm-project #53906, the
-ZJY0516 fork is retired). On top of upstream: the ocnr SM120 NoPE sparse-MLA
-port (fp8 + FlashInfer zero-pad, backend priority, buffer pin), the
-b12x PCIe oneshot allreduce integration (b12x 1.3.0, CuTe DSL — no native
-extension build), and upstream's own fixes landing in the same window
-(vllm-project #52596 shm unlink, flashinfer `0.6.18.post1`). KV offloading is
-not carried and not enabled (see *kv-offload status* below).
+`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:11190e94…` built from
+the `0.30` branch (`31a7a53c1d`, 2026-09-18 re-cut onto upstream vLLM `main`
+past the v0.30.0rc1 fork — GLM-5.3-Flash model support is native upstream
+since vllm-project #53906, the ZJY0516 fork is retired). On top of upstream:
+the ocnr SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
+priority, buffer pin), the b12x PCIe oneshot allreduce integration (b12x
+1.3.0, CuTe DSL — no native extension build), and the hybrid-state
+prefix-cache fix #55601 (still open upstream). KV offloading is enabled on
+upstream's native backend (see *kv-offload status* below).
 
 ```
 vllm serve /models/zai-org/GLM-5.3-Flash \
@@ -25,6 +25,8 @@ vllm serve /models/zai-org/GLM-5.3-Flash \
   --gpu-memory-utilization 0.97 \
   --kv-cache-dtype fp8 \
   --enable-prefix-caching \
+  --kv-offloading-size 100 \
+  --kv-offloading-backend native \
   --enable-chunked-prefill \
   --tool-call-parser glm47 \
   --reasoning-parser glm45 \
@@ -63,9 +65,10 @@ Per-GPU levers (1% of gmu ≈ 0.93 GiB on the 97,887 MiB cards):
 
 Final config `0.97 + mbt 8192` → 7.91 GiB → **1,095,931 tokens, full 1M with
 `image: 1` (1.05x concurrency)** (identical on the 2026-09-09 and 2026-09-11
-rebuild boots; was 7.95 GiB / 1,100,441 tokens on the fork build). A 1M request
-consumes ~95% of GPU KV; concurrent overflow preempts and recomputes (no
-offload tier since 2026-09-11). Forcing
+rebuild boots; was 7.95 GiB / 1,100,441 tokens on the fork build). With the
+native KV offloader resident (re-enabled 2026-09-17), the GPU KV budget is
+**518,311 tokens** (2026-09-18 boot — offload staging takes the difference)
+and long context rides the 100 GiB CPU spill instead of preempting. Forcing
 `--max-model-len 1048576` explicitly does *not* bypass the fit check — it
 raises a hard ValueError at startup while memory is short.
 
@@ -127,19 +130,20 @@ a 97% local hit rate. Post-deploy validation: cold vs warm answers byte
 identical on a 12,388-token prompt (≥3 mamba blocks); external-hit soak
 pending. See `incident-kv-offload-cache-corruption.md`.
 
-The `0.29` branch (`9789b7e59b`, 2026-09-17) now carries the fixes needed to
-re-enable offloading on GLM-5.3-Flash:
+The `0.30` branch (`31a7a53c1d`, 2026-09-18 re-cut onto upstream main past
+v0.30.0rc1) carries what re-enabling offloading needs on GLM-5.3-Flash:
 
 - #55601 — seed hybrid mamba state index with `mamba_block_size` (the
-  corruption fix; 1-line, `mamba_hybrid.py`)
-- #54743 — scope offload group configs to prefix-cacheable groups (required
-  to boot the OffloadingConnector at all: the kpool-tail scratch group at
-  block size 4 fails the `tokens_per_block % tokens_per_hash` assert;
-  also excludes the DSA tail_cache from keying/loading)
-- #55450 — retire mamba states across null gaps (state-lifecycle hygiene,
-  merged upstream 2026-09-11, after our rebuild base)
-- #50388 — fix ValueError on KV load failure with a hybrid KV cache (error
-  path)
+  corruption fix; 1-line, `mamba_hybrid.py`) — still open upstream, carried
+- #54743 — scope offload group configs to prefix-cacheable groups: NOT
+  needed on 0.30 — upstream's native offloader selects eligible groups
+  itself (`get_offloading_group_ids` → `prefix_cacheable_group_ids`),
+  verified booting the multi-group kpool-tail config 2026-09-18 (the PR
+  itself is still open upstream with conflicts)
+- #55450 — retire mamba states across null gaps: merged upstream, in the
+  0.30 base
+- #50388 — fix ValueError on KV load failure with a hybrid KV cache:
+  merged upstream, in the 0.30 base
 
 The 0.28-era native KV fixes (#52771 zeroed hits under spec decode, #54288
 final-sampled-token slot, #51787 recency) were verified already present in

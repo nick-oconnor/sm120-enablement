@@ -29,6 +29,18 @@
   3 h soak). Offloading amplified exposure (external hits are hits too —
   1,094,400 external-hit tokens in the degraded window), which is why
   removing offload only reduced the rate instead of eliminating it.
+- **2026-09-18** — fix carried on the `0.30` re-cut (upstream main past
+  v0.30.0rc1; image
+  `registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:11190e94…`,
+  gitops `027a6c79`); offload live on upstream's native `CPUOffloadingSpec`
+  (scopes offload configs to prefix-cacheable groups natively via
+  `get_offloading_group_ids` — no #54743 carry needed). Production boot
+  healthy: FLASHINFER_MLA_SPARSE_SM120 + fp8_ds_mla selected, no asserts,
+  prefix hit 82% within minutes, one-time allocator flush-retry + one-time
+  `_count_expert_num_tokens` JIT (both known-benign signatures). Stores
+  flowing on eviction (up to 2.66 GB/10s); external-hit soak still
+  pending — watch `vllm:external_prefix_cache_hits_total` and finish
+  reasons over the first hours of agentic load.
 
 ## Symptom
 
