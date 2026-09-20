@@ -41,6 +41,27 @@
   flowing on eviction (up to 2.66 GB/10s); external-hit soak still
   pending — watch `vllm:external_prefix_cache_hits_total` and finish
   reasons over the first hours of agentic load.
+- **2026-09-20** — a **second, independent** corruption source found on the
+  same model and fixed: upstream **#57477**, the NVIDIA
+  `_kpool_tail_seed_kernel`. The tail cache tensor is aliased onto the
+  indexer tensor by `get_kv_cache_config_from_groups`, so it carries the
+  indexer's block stride — probed live on the 09-18 image as
+  `stride=(38016, 512, 128, 1)` against a dense `2 * kpool * head_dim =
+  1024`. The kernel addressed blocks densely, so on **every prefill**, for
+  every tail block `blk > 0`, the 128-element K and score writes landed
+  inside indexer block `blk // 37`, overwriting pooled indexer keys with raw
+  unpooled values — and the request's own tail block was never seeded, so
+  decode compressed the boundary pool from whatever the previous tenant
+  left. Silent (no OOB, no assert, no log), persistent (the damaged indexer
+  blocks are prefix-cached and reused) and cumulative — exactly the
+  "degenerates after a while, restart clears it" profile, and it accounts
+  for the residue #55601 alone did not explain. Fixed in the 2026-09-20
+  `0.30` re-cut; regression test
+  `tests/kernels/test_kpool_decode_update_batched.py::test_prefill_seed_honors_padded_tail_block_stride`
+  FAILs on the 09-18 image and PASSes on the re-cut. Post-fix soak: six
+  ~300K-token sessions cycled through a full eviction of the 1.06M-token GPU
+  pool, 12/12 needles correct, 3,594,240 external-hit tokens, 0 preemptions,
+  0 errors. This closes the external-hit soak listed as pending above.
 
 ## Symptom
 
@@ -69,7 +90,15 @@ the degraded window the offloader served 1,094,400 external (CPU) prefix-hit
 tokens; corruption scaled with cache-hit volume, consistent with upstream
 #53912.
 
-## Root cause (confirmed 2026-09-17)
+## Root cause (two, confirmed 2026-09-17 and 2026-09-20)
+
+There were **two** independent defects producing the same fingerprint. The
+first is below; the second — the kpool tail seed kernel writing at a dense
+stride into a padded-stride view (upstream #57477) — is in the 2026-09-20
+status entry. #55601 fixed the recurrent-state half; #57477 fixed the
+indexer half. Neither alone was sufficient.
+
+### 1. Hybrid mamba state-index units (#55600)
 
 Upstream **#55600** (fix: PR #55601, cherry-picked as `be9492b657`): the KDA
 recurrent-state slot seed on a prefix-cache hit is computed in the wrong
@@ -112,8 +141,16 @@ any restart that follows a corruption window.
   state index seeded with the wrong block size on prefix-cache hits)
 - https://github.com/vllm-project/vllm/pull/55601 (the 1-line fix; open —
   cherry-picked onto the ocnr `0.29` branch as `be9492b657`)
+- https://github.com/vllm-project/vllm/pull/57477 (merged: address kpool tail
+  blocks by the padded indexer stride in the NVIDIA prefill seed kernel —
+  the second corruption source, found 2026-09-20)
 - https://github.com/vllm-project/vllm/issues/50454 (multi-group + connector
   external hit + eviction pressure; open — separate crash-class risk)
+- https://github.com/vllm-project/vllm/issues/56868 and
+  https://github.com/vllm-project/vllm/issues/56605 (community reports of
+  the same "long session degenerates into repeated-token word salad"
+  profile on GLM-5.3-Flash; both predate #57477 and neither has been
+  re-tested against it upstream)
 - https://github.com/vllm-project/vllm/issues/53912 (corruption scales with
   prefix-cache hit rate; reopened — MTP-gated variant, we run no MTP)
 - https://github.com/vllm-project/vllm/issues/52735 (OffloadingConnector

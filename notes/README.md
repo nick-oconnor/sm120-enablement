@@ -62,17 +62,36 @@ vLLM `0.25.1+sm120.cu131`) are historical.
 - [`incident-kv-offload-cache-corruption.md`](incident-kv-offload-cache-corruption.md)
   — silent progressive KV-cache corruption on GLM-5.3-Flash with APC + native
   offloading (garbled output, then empty responses; all finishes reported as
-  clean `stop`). **Resolved** — offload patches dropped from the branch and
-  flags removed in production 2026-09-11; fingerprint matches upstream #50454.
+  clean `stop`). **Resolved** — two independent causes, both now fixed on the
+  branch: upstream **#55600/#55601** (KDA recurrent-state slot seeded in the
+  wrong units on any prefix-cache hit) and upstream **#57477** (the NVIDIA
+  kpool tail seed kernel addressing tail blocks densely against a
+  padded-stride tail view, so every prefill poisoned unrelated indexer
+  blocks). See `serving-config.md` for the #57477 probe and regression test.
 
 ## TL;DR current status
 
-- **Serving (current)**: GLM-5.3-Flash on `0.29.0-sm120-cu130` (image
-  `94a85a96`, branch `bea5f74795`), full 1M context, fp8 KV, b12x PCIe
-  one-shot all-reduce. See `serving-config.md`.
-- **KV offloading**: **removed** (2026-09-11) after silent cache corruption on
-  the previous build. See `incident-kv-offload-cache-corruption.md`; the M3-era
-  deadlock note below covers the earlier 2026-07 episode.
+- **Serving (current)**: GLM-5.3-Flash on `0.30.0-sm120-cu130`, `0.30`
+  branch re-cut onto upstream main `4868312128` (2026-09-20), full 1M
+  context (1,064,361 KV tokens, 1.02x), fp8 KV, b12x PCIe one-shot
+  all-reduce, native KV offload. See `serving-config.md`.
+- **0.30 context regression**: **fixed** — the indexer prefill gather
+  workspace was sized in tokens rather than pools, burning 5.16 GiB/GPU and
+  cutting auto-fit to 516,096. Upstream #55221/#55222 carried on the branch;
+  available KV 3.81 → 7.68 GiB. The 4.19 GiB CUDA-graph *estimate* is a red
+  herring and must not be disabled — see `serving-config.md`.
+- **kpool tail seed poisoning**: **fixed** — the NVIDIA
+  `_kpool_tail_seed_kernel` addressed tail blocks densely while the tail
+  tensor aliases the indexer tensor with the indexer's padded block stride
+  (38016 vs 1024 elements), so every prefill scribbled raw K/gate scores
+  into unrelated indexer blocks and left the request's own tail unseeded.
+  Silent, prefix-cached, cumulative, restart-only recovery. Upstream #57477,
+  in the 09-20 base.
+- **KV offloading**: **enabled** (re-enabled 2026-09-17). Requires dshm
+  120Gi. 2026-09-20 eviction/external-hit soak: 12/12 needles correct,
+  3.59M external-hit tokens, 0 preemptions/errors. See
+  `incident-kv-offload-cache-corruption.md`; the M3-era deadlock note below
+  covers the earlier 2026-07 episode.
 - **Xid-69 crash (M3-era)**: open — **fix candidate deployed**. FlashInfer pin past
   PR #3187 (`2c0d595f`) + `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1` wire-up
   shipped 2026-07-10/11. Caveat: only addresses the FlashInfer-autotune

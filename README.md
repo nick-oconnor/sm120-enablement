@@ -75,10 +75,15 @@ PCIe Speed (between GPU pairs):
 ## vLLM Build
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
-branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base past the
-v0.30.0rc1 fork, re-cut 2026-09-18 — GLM-5.3-Flash model support is native
+branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
+`4868312128`, re-cut 2026-09-20 — GLM-5.3-Flash model support is native
 upstream since vllm-project #53906; the branch carries the ocnr SM120 NoPE
-port).
+port plus two carried upstream patches, #55601 and #55222). The 09-20 re-cut
+fixes the two 0.30 production defects: the lost 1M context (#55221/#55222 —
+the indexer prefill workspace was sized in tokens, not pools) and silent
+KV-cache poisoning (#57477 — the kpool tail seed kernel wrote at a dense
+stride into a padded-stride view). See
+[`notes/serving-config.md`](notes/serving-config.md).
 
 Build constraints:
 
@@ -130,8 +135,8 @@ docker run --rm --gpus all --shm-size 120g \
       --tensor-parallel-size 4 \
       --enable-expert-parallel \
       --trust-remote-code \
-# auto-fit; NOTE the 09-18 0.30 boot cut this to 516,096 (3.81 GiB KV with
-# the offloader resident) — the pre-0.30 builds held the full 1M here
+# auto-fit; holds the full 1M (7.68 GiB KV / 1,064,361 tokens) since the
+# 09-20 re-cut picked up the indexer-workspace right-size (vllm #55222)
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
