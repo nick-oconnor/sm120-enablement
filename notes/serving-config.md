@@ -197,6 +197,28 @@ multi-channel mode demands per-graph channel ids vLLM does not plumb.
 not exist — route by size, do not call it. Kernels are CuTe DSL, compiled at
 first use (first requests after boot pay ~50 ms ITL once, self-heals).
 
+### Benchmarks (2026-09-21, 0.30 production build, offload on, b12x oneshot — concurrency 1, 16 prompts per cell, zero failures)
+
+`vllm bench serve` (same protocol as the 09-11 baseline below) against the
+production deployment — statefulset `apps/vllm`, image
+`0.30.0-sm120-cu130@sha256:d15260ba`, auto-fit full 1M, native KV offload on:
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | TPOT |
+|---|---|---|---|---|---|
+| 2048 | 256 | 86.15 | 237ms | 10.73ms | 10.72 |
+| 8192 | 1024 | 86.59 | 850ms | 10.73ms | 10.73 |
+| 32768 | 4096 | 86.81 | 3217ms | 10.74ms | 10.73 |
+| 131072 | 8192 | 82.47 | 10471ms | 10.86ms | 10.85 |
+
+vs the 09-11 no-offload 0.29 baseline: long-context prefill improved on the
+0.30 re-cut — median TTFT 14270ms → 10471ms at 128K (−27%) and 3300ms →
+3217ms at 32K — and the 128K decode rate holds (82.09 → 82.47 tok/s).
+Short-context decode eases ~3% (89.0-89.7 → 86.2-86.8 tok/s; median ITL
+10.33-10.34 → 10.73-10.74ms, +0.4ms). TTFT percentiles stay tight at every
+length (P99 within ~25ms of P50); no failed requests, no preemptions. This
+is the current production profile — the table below is the no-offload
+reference build.
+
 ### Benchmarks (2026-09-11, no-offload build, b12x oneshot — concurrency 1, 16 prompts per cell, zero failures)
 
 | Input | Output | Decode (tok/s) | Median TTFT | Median ITL | TPOT |

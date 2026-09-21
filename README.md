@@ -10,18 +10,22 @@ and MiniMax-M3-NVFP4 — their configs live in
 
 ## Benchmarks
 
-GLM-5.3-Flash, vLLM `0.29.0-sm120-cu130` no-offload build with the b12x PCIe
-one-shot all-reduce (2026-09-11). 16 prompts, concurrency 1, random dataset,
-zero failed requests. The current production build is `0.30.0-sm120-cu130`
-with native KV offload — the table below is the 09-11 no-offload baseline;
-a 0.30 re-bench is pending.
+GLM-5.3-Flash, vLLM `0.30.0-sm120-cu130` production build with native KV
+offload and the b12x PCIe one-shot all-reduce (2026-09-21). 16 prompts,
+concurrency 1, random dataset, zero failed requests.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 89.04          | 241ms     | 10.33ms  |
-| 8192      | 1024       | 89.40          | 877ms     | 10.34ms  |
-| 32768     | 4096       | 89.71          | 3300ms    | 10.34ms  |
-| 131072    | 8192       | 82.09          | 14270ms   | 10.48ms  |
+| 2048      | 256        | 86.15          | 237ms     | 10.73ms  |
+| 8192      | 1024       | 86.59          | 850ms     | 10.73ms  |
+| 32768     | 4096       | 86.81          | 3217ms    | 10.74ms  |
+| 131072    | 8192       | 82.47          | 10471ms   | 10.86ms  |
+
+vs the 09-11 `0.29.0-sm120-cu130` no-offload baseline: long-context prefill is
+the win on the 0.30 re-cut — 128K TTFT 14270ms → 10471ms (−27%) — while decode
+holds ~82 tok/s at 128K and eases ~3% at short context (89.0 → 86.2 tok/s,
+median ITL 10.33 → 10.73ms). The full 09-11 baseline table is in
+[`notes/serving-config.md`](notes/serving-config.md).
 
 PSU output (self-reported via the PSU's USB interface): 234W idle, 1.28kW under bench load, 1.76kW peak.
 
