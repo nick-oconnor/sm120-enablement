@@ -2,17 +2,15 @@
 
 A workstation serving [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)
 (sparse-MLA MoE with native vision, 1M-token context) with
-[vLLM](https://github.com/nick-oconnor/vllm). Previously: DeepSeek-V4-Flash-0731
-and MiniMax-M3-NVFP4 — their configs live in
-[`notes/`](notes/).
+[vLLM](https://github.com/nick-oconnor/vllm).
 
 ![system](images/system.jpg)
 
 ## Benchmarks
 
-GLM-5.3-Flash, vLLM `0.30.0-sm120-cu130` production build with native KV
-offload and the b12x PCIe one-shot all-reduce (2026-09-21). 16 prompts,
-concurrency 1, random dataset, zero failed requests.
+GLM-5.3-Flash on vLLM `0.30.0-sm120-cu130` with native KV offload and the
+b12x PCIe one-shot all-reduce (2026-09-21). 16 prompts, concurrency 1,
+random dataset, zero failed requests.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
@@ -20,12 +18,6 @@ concurrency 1, random dataset, zero failed requests.
 | 8192      | 1024       | 86.59          | 850ms     | 10.73ms  |
 | 32768     | 4096       | 86.81          | 3217ms    | 10.74ms  |
 | 131072    | 8192       | 82.47          | 10471ms   | 10.86ms  |
-
-vs the 09-11 `0.29.0-sm120-cu130` no-offload baseline: long-context prefill is
-the win on the 0.30 re-cut — 128K TTFT 14270ms → 10471ms (−27%) — while decode
-holds ~82 tok/s at 128K and eases ~3% at short context (89.0 → 86.2 tok/s,
-median ITL 10.33 → 10.73ms). The full 09-11 baseline table is in
-[`notes/serving-config.md`](notes/serving-config.md).
 
 PSU output (self-reported via the PSU's USB interface): 234W idle, 1.28kW under bench load, 1.76kW peak.
 
@@ -74,19 +66,19 @@ PCIe Speed (between GPU pairs):
 - 62-shard checkpoint served from `/models/zai-org/GLM-5.3-Flash` on the local
   models mount; SM120 serving path is the hardware-verified fp8 + FlashInfer
   NoPE sparse-MLA port (see `notes/serving-config.md`)
-- Previous models on this rig: DeepSeek-V4-Flash-0731, MiniMax-M3-NVFP4
 
 ## vLLM Build
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
 branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
-`4868312128`, re-cut 2026-09-20 — GLM-5.3-Flash model support is native
-upstream since vllm-project #53906; the branch carries the ocnr SM120 NoPE
-port plus two carried upstream patches, #55601 and #55222). The 09-20 re-cut
-fixes the two 0.30 production defects: the lost 1M context (#55221/#55222 —
-the indexer prefill workspace was sized in tokens, not pools) and silent
-KV-cache poisoning (#57477 — the kpool tail seed kernel wrote at a dense
-stride into a padded-stride view). See
+`4868312128` — GLM-5.3-Flash model support is native upstream since
+vllm-project #53906). On top of upstream, the branch carries the ocnr SM120
+NoPE sparse-MLA port plus two open-upstream patches: #55222 (right-sizes the
+indexer prefill workspace — without it, #55221 cuts the auto-fit
+`max_model_len` to 516K and loses the 1M context) and #55601 (seeds the
+hybrid mamba state index by `mamba_block_size` — the prefix-cache
+KV-corruption fix). Upstream's #57477 (kpool tail-seed stride fix for the
+silent KV-cache poisoning) is already in the base. See
 [`notes/serving-config.md`](notes/serving-config.md).
 
 Build constraints:
@@ -109,7 +101,7 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.29.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.29.0-sm120-cu130) (09-11 build; a 0.30.0 push is pending).
+Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:d15260ba1d541ff35773d21f0be7e47164aacd8fba40c3409aef15caf6e13281`).
 
 ## vLLM Execution
 
@@ -139,8 +131,8 @@ docker run --rm --gpus all --shm-size 120g \
       --tensor-parallel-size 4 \
       --enable-expert-parallel \
       --trust-remote-code \
-# auto-fit; holds the full 1M (7.68 GiB KV / 1,064,361 tokens) since the
-# 09-20 re-cut picked up the indexer-workspace right-size (vllm #55222)
+# auto-fit; holds the full 1M (7.68 GiB KV / 1,064,361 tokens) with the
+# indexer-workspace right-size (vllm #55222)
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
