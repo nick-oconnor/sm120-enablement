@@ -71,11 +71,12 @@ PCIe Speed (between GPU pairs):
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
 branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
-`4868312128` — GLM-5.3-Flash model support is native upstream since
+`d90f0eade5` — GLM-5.3-Flash model support is native upstream since
 vllm-project #53906). On top of upstream, the branch carries the ocnr SM120
-NoPE sparse-MLA port plus two open-upstream patches: #55222 (right-sizes the
-indexer prefill workspace — without it, #55221 cuts the auto-fit
-`max_model_len` to 516K and loses the 1M context) and #55601 (seeds the
+NoPE sparse-MLA port plus two open-upstream patches: #55222 (both halves —
+right-sizes the indexer prefill workspace, without which #55221 cuts the
+auto-fit `max_model_len` to 516K and loses the 1M context, and sizes the
+prefill chunk budget in compressed rows) and #55601 (seeds the
 hybrid mamba state index by `mamba_block_size` — the prefix-cache
 KV-corruption fix). Upstream's #57477 (kpool tail-seed stride fix for the
 silent KV-cache poisoning) is already in the base. See
@@ -101,7 +102,7 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:d15260ba1d541ff35773d21f0be7e47164aacd8fba40c3409aef15caf6e13281`).
+Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:a9725bcb2d994a05bc9eaf5938dc4a8507b408ee9cc2f4ddaf2cf4856cad8025`).
 
 ## vLLM Execution
 
@@ -120,8 +121,6 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
 # cap JIT parallelism so container PIDs stay sane
   -e MAX_JOBS=32 \
-# sync FlashInfer autotune tactic choice across TP ranks during warmup
-  -e VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1 \
 # b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
   vllm:0.30.0-sm120-cu130 \

@@ -1,18 +1,28 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash — current (2026-09-20 0.30 re-cut; native KV offload)
+## GLM-5.3-Flash — current (2026-09-22 0.30 rebase; native KV offload)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
-`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130` built from the `0.30`
-branch (2026-09-20 re-cut onto upstream vLLM `main` at `4868312128` —
-GLM-5.3-Flash model support is native upstream since vllm-project #53906,
-the ZJY0516 fork is retired). On top of upstream: the ocnr SM120 NoPE
-sparse-MLA port (fp8 + FlashInfer zero-pad, backend priority, buffer pin),
-the b12x PCIe oneshot allreduce integration (b12x 1.3.0, CuTe DSL — no
-native extension build), the hybrid-state prefix-cache fix #55601 and the
-indexer-prefill-workspace right-size #55222 (both still open upstream).
-KV offloading is enabled on upstream's native backend (see *kv-offload
-status* below).
+`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:a9725bcb` built from
+the `0.30` branch (rebased 2026-09-22 onto upstream vLLM `main` at
+`d90f0eade5`, past v0.30.0 — GLM-5.3-Flash model support is native upstream
+since vllm-project #53906, the ZJY0516 fork is retired). On top of upstream:
+the ocnr SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
+priority, buffer pin), the b12x PCIe oneshot allreduce integration (b12x
+1.3.0, CuTe DSL — no native extension build), the hybrid-state prefix-cache
+fix #55601 and the indexer-prefill-workspace right-size #55222 in **both
+halves** (the glm5next call-site fix plus the chunker-budget commit — still
+open upstream). The FlashInfer autotune-sync ocnr commit was **dropped** in
+this rebase: upstream now syncs autotune tactics natively (leader-only
+autotune + result broadcast, both in the generic warmup and the SM120
+sparse-MLA decode warmup), and `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP` is
+no longer set. KV offloading is enabled on upstream's native backend (see
+*kv-offload status* below).
+
+Boot verified 2026-09-22 (pod `vllm-0`, uid `60dac8a3`): backend
+`FLASHINFER_MLA_SPARSE_SM120` + `fp8_ds_mla`, available KV 7.68 GiB, auto-fit
+`full model context length 1048576 fits`, autotune + CUDA graphs (FULL 3/3,
+PIECEWISE 4/4) clean, chat completions 200 OK.
 
 The 09-20 re-cut exists to fix the two 0.30 production defects — the lost
 1M context and the silent KV-cache poisoning. Both are covered below under
@@ -45,9 +55,11 @@ vllm serve /models/zai-org/GLM-5.3-Flash \
 
 Env: `HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`,
 `OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
-`VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP=1`,
 `VLLM_ENABLE_PCIE_ALLREDUCE=1` (b12x oneshot replaces NCCL-SHM for decode-size
-all-reduces; >8 MiB prefill collectives stay on NCCL).
+all-reduces; >8 MiB prefill collectives stay on NCCL). FlashInfer autotune
+stays enabled; tactic consistency across TP ranks is upstream-native
+(leader autotunes, results broadcast) — the old
+`VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP` opt-in is gone.
 Keep CUDA graph memory profiling enabled (v0.21+ default, don't set
 `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0` — see *Allocator flush-retry
 warnings* below).
@@ -93,7 +105,10 @@ this indexer's KV is pool-granular.**
 At `max_model_len = 1,048,576` that reserves **5.16 GiB/GPU** for the K-gather
 workspace instead of 1.29 GiB. `deepseek_v4/attention.py` already divides at
 the same call site. Upstream issue **#55221**, PR **#55222** (open) — carried
-on the branch.
+on the branch in both halves: the call-site fix plus the chunker budget
+sized in compressed rows (without the chunker half, a step can admit up to
+`compress_ratio`x more rows than the workspace holds at ≥64 requests near
+max-model-len; not reachable at the production `--max-num-seqs 4`).
 
 Measured on this box (4x RTX PRO 6000, TP4, gmu 0.97, mbt 8192, fp8 KV,
 offload on):
