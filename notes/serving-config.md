@@ -19,7 +19,8 @@ sparse-MLA decode warmup), and `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP` is
 no longer set. KV offloading is enabled on upstream's native backend (see
 *kv-offload status* below).
 
-Boot verified 2026-09-22 (pod `vllm-0`, uid `60dac8a3`): backend
+Boot verified 2026-09-22 (pod `vllm-0`, uid `404ab979`, after raising
+`--limit-mm-per-prompt` to 20 images): backend
 `FLASHINFER_MLA_SPARSE_SM120` + `fp8_ds_mla`, available KV 7.68 GiB, auto-fit
 `full model context length 1048576 fits`, autotune + CUDA graphs (FULL 3/3,
 PIECEWISE 4/4) clean, chat completions 200 OK.
@@ -49,7 +50,7 @@ vllm serve /models/zai-org/GLM-5.3-Flash \
   --tool-call-parser glm47 \
   --reasoning-parser glm45 \
   --enable-auto-tool-choice \
-  --limit-mm-per-prompt '{"image": 1, "video": 0}' \
+  --limit-mm-per-prompt '{"image": 20, "video": 0}' \
   --default-chat-template-kwargs '{"thinking": true}'
 ```
 
@@ -87,7 +88,9 @@ Final config `0.97 + mbt 8192` → 7.91 GiB → **1,095,931 tokens, full 1M with
 `image: 1` (1.05x concurrency)** (identical on the 2026-09-09 and 2026-09-11
 rebuild boots; was 7.95 GiB / 1,100,441 tokens on the fork build). The
 offload-enabled boot on the pre-0.30 image held the same full 1M
-("full model context length 1048576 fits", 2026-09-18 01:29 UTC).
+("full model context length 1048576 fits", 2026-09-18 01:29 UTC). The 0.30
+production boot raises the limit to `image: 20` and still auto-fits full 1M
+at the same 7.68 GiB (2026-09-22).
 
 ### 0.30 context regression — root cause and fix (2026-09-20)
 

@@ -145,7 +145,7 @@ docker run --rm --gpus all --shm-size 120g \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
       --enable-auto-tool-choice \
-      --limit-mm-per-prompt '{"image": 1, "video": 0}' \
+      --limit-mm-per-prompt '{"image": 20, "video": 0}' \
 # force thinking mode on every turn
       --default-chat-template-kwargs '{"thinking": true}'
 ```
