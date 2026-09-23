@@ -1,11 +1,11 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash — current (2026-09-22 0.30 rebase; native KV offload)
+## GLM-5.3-Flash — current (2026-09-23 0.30 rebase; native KV offload)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
-`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:a9725bcb` built from
-the `0.30` branch (rebased 2026-09-22 onto upstream vLLM `main` at
-`d90f0eade5`, past v0.30.0 — GLM-5.3-Flash model support is native upstream
+`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:f8cdce48` built from
+the `0.30` branch (rebased 2026-09-23 onto upstream vLLM `main` at
+`9f07d023d0`, past v0.30.0 — GLM-5.3-Flash model support is native upstream
 since vllm-project #53906, the ZJY0516 fork is retired). On top of upstream:
 the ocnr SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
 priority, buffer pin), the b12x PCIe oneshot allreduce integration (b12x
@@ -13,14 +13,17 @@ priority, buffer pin), the b12x PCIe oneshot allreduce integration (b12x
 fix #55601 and the indexer-prefill-workspace right-size #55222 in **both
 halves** (the glm5next call-site fix plus the chunker-budget commit — still
 open upstream). The FlashInfer autotune-sync ocnr commit was **dropped** in
-this rebase: upstream now syncs autotune tactics natively (leader-only
+the 2026-09-22 rebase: upstream now syncs autotune tactics natively (leader-only
 autotune + result broadcast, both in the generic warmup and the SM120
 sparse-MLA decode warmup), and `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP` is
 no longer set. KV offloading is enabled on upstream's native backend (see
 *kv-offload status* below).
 
-Boot verified 2026-09-22 (pod `vllm-0`, uid `404ab979`, after raising
-`--limit-mm-per-prompt` to 20 images): backend
+Boot verification of the 2026-09-23 rebase (f8cdce48) is **pending** — run
+the SM120-GLM53-FLASH.md boot-verify checklist on the first boot (Flux rolls
+`vllm-0` on reconcile). Previous build (a9725bcb), boot-verified 2026-09-22
+(pod `vllm-0`, uid `404ab979`, after raising `--limit-mm-per-prompt` to 20
+images): backend
 `FLASHINFER_MLA_SPARSE_SM120` + `fp8_ds_mla`, available KV 7.68 GiB, auto-fit
 `full model context length 1048576 fits`, autotune + CUDA graphs (FULL 3/3,
 PIECEWISE 4/4) clean, chat completions 200 OK.

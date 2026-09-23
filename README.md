@@ -71,7 +71,7 @@ PCIe Speed (between GPU pairs):
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
 branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
-`d90f0eade5` — GLM-5.3-Flash model support is native upstream since
+`9f07d023d0` — GLM-5.3-Flash model support is native upstream since
 vllm-project #53906). On top of upstream, the branch carries the ocnr SM120
 NoPE sparse-MLA port plus two open-upstream patches: #55222 (both halves —
 right-sizes the indexer prefill workspace, without which #55221 cuts the
@@ -102,7 +102,7 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:a9725bcb2d994a05bc9eaf5938dc4a8507b408ee9cc2f4ddaf2cf4856cad8025`).
+Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:f8cdce48bc2ab7e64573c2338a633142b4e6e25c606f814849acf29b22ac011a`).
 
 ## vLLM Execution
 

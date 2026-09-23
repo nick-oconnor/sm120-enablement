@@ -3,7 +3,7 @@ Standalone [vLLM‎](https://github.com/nick-oconnor/vllm) inference image for t
 Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision). DeepGEMM is compiled in-image and TileLang builds from sdist; FlashInfer ships as the `flashinfer-jit-cache` wheel and CUTLASS from the `nvidia-cutlass-dsl` wheel — kernels the cache doesn't cover JIT at server startup, so `cuda-nvrtc-dev` ships in the runtime layer.
 
 #### Image Contents
-- **vLLM** built from upstream `main` at `d90f0eade5` (the `0.30` branch,
+- **vLLM** built from upstream `main` at `9f07d023d0` (the `0.30` branch,
   tagged `0.30.0-sm120-cu130`) — **GLM-5.3-Flash model support is native
   upstream** since vllm-project #53906, so no fork overlay is needed; the
   ocnr commits on top are the SM120 NoPE sparse-MLA port (fp8 + FlashInfer
