@@ -1,6 +1,138 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash — current (2026-09-23 0.30 rebase; native KV offload)
+## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-09-26)
+
+Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image unchanged
+(`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:f8cdce48` — the
+2026-09-23 rebase build). Checkpoint switched to
+`nvidia/GLM-5.3-Flash-NVFP4` (ModelOpt recipe
+`nvfp4_experts_dense_mlp-kv_fp8_cast`: experts + dense MLP W4A4, attention /
+router / norms / lm_head / MTP head at source precision, fp8-cast KV recipe)
+with MTP speculative decoding k=3. Served model name is still
+`GLM-5.3-Flash`. Weights 49.17 GiB/GPU (vs 76.87 fp8); the freed VRAM pays
+for the MTP draft head *and* a ~24 GiB/GPU reservation for comfyui, which
+shares GPUs 0 and 3.
+
+```
+vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
+  --served-model-name GLM-5.3-Flash \
+  --trust-remote-code \
+  --tensor-parallel-size 4 \
+  --enable-expert-parallel \
+  --max-model-len auto \
+  --max-num-seqs 4 \
+  --max-num-batched-tokens 8192 \
+  --gpu-memory-utilization 0.69 \
+  --moe-backend flashinfer_cutlass \
+  --kv-cache-dtype fp8 \
+  --enable-prefix-caching \
+  --kv-offloading-size 100 \
+  --kv-offloading-backend native \
+  --enable-chunked-prefill \
+  --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
+  --tool-call-parser glm47 \
+  --reasoning-parser glm45 \
+  --enable-auto-tool-choice \
+  --limit-mm-per-prompt '{"image": 20, "video": 0}' \
+  --default-chat-template-kwargs '{"thinking": true}'
+```
+
+Env adds
+`VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,trtllm::fused_moe::gemm2`
+(see *EP autotune deadlock* below); everything else carries over from the fp8
+era (`HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`,
+`OMP_NUM_THREADS=4`, `MAX_JOBS=32`, `VLLM_ENABLE_PCIE_ALLREDUCE=1`). dshm
+stays 120Gi for the 100 GiB offload mmap.
+
+### Boot (2026-09-26, f8cdce48, NVFP4+MTP3)
+
+Attention stays `FLASHINFER_MLA_SPARSE_SM120` + `fp8_ds_mla` — the checkpoint
+quantizes experts + dense MLP only, so the SM120 sparse-MLA port is untouched.
+MoE resolves to `FLASHINFER_CUTLASS` NVFP4 (pinned via `--moe-backend`), and
+the bf16 MTP draft experts route through the unquantized FlashInfer-CUTLASS
+path. Weights load 49.17 GiB/GPU in ~85s (vs ~265s at fp8). Profiled budget
+at gmu 0.69: consumed 50.71 GiB (weights + non-torch), peak activation
+6.34 GiB, CUDA graph 0.26 GiB, **KV 8.50 GiB → 1,064,126 tokens (1.01x
+concurrency over 1,048,576)**; auto-fit holds the full 1M.
+
+### gmu 0.69 memory model (measured)
+
+gmu is sized from measured *resident* peak, not the boot accounting: fp4
+kernel workspaces and the 1M-shape indexer allocations land outside vLLM's
+accounted budget, so resident runs ~4.8 GiB above `requested`. At 0.69 a full
+1M prefill leaves 24.5 GiB free on GPU 0 and 25.1 GiB on the rest; 0.70 drops
+GPU 0 to 23.7 GiB. Little room above that: KV headroom over 1,048,576 tokens
+is only 1.5%.
+
+### MTP3 tuning
+
+Acceptance 66% overall — 79.9 / 59.3 / 41.8% by draft position, 1.81 accepted
+tokens/step. k=3 over k=2: k=2 costs the same KV (8.47 GiB) and decodes
+slower. k=3 over k=1 (136-139 tok/s): the +19% outweighs shrinking the 1M
+headroom from 1.05x to 1.01x. Decode at c=1: 89 → 157-165 tok/s
+(ITL 10.3 → 6.0-6.4 ms).
+
+### EP autotune deadlock (fixed by skip-ops env)
+
+FlashInfer autotunes the trtllm `fused_moe` tactics even though CUTLASS is
+the selected NVFP4 MoE backend, and the EP ranks fall out of phase and
+deadlock: rank 0 completes while ranks 1-3 sit at 0% forever, visible only as
+repeated `shm_broadcast "No available shared memory broadcast block"` from
+EngineCore. `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,trtllm::fused_moe::gemm2`
+skips those two ops; fp4_gemm autotune still runs.
+
+### Checkpoint prerequisite (host-side, not in git)
+
+NVIDIA ships the MTP module (layer 45) in bf16 — no `weight_scale` tensors,
+while every real layer has them — but omits it from `hf_quant_config.json`'s
+quant exclusion list, so vLLM builds NVFP4 experts for the draft model and
+startup dies with
+`The size of tensor a (1024) must match the size of tensor b (2048)` (fp4
+packs two values per byte). Fix on home-0: edit the checkpoint's
+`config.json` and `hf_quant_config.json` to declare layer 45 unquantized,
+listing **both** `model.layers.45*` and `model.language_model.layers.45*`:
+`apply_vllm_mapper` rewrites exclusions through the target model's
+WeightsMapper (`model.language_model.` → `language_model.model.`), but the
+MTP head is built as a text-only model whose modules are `model.layers.45.*`,
+so only the unmapped spelling actually matches. Originals kept alongside as
+`*.nvidia-orig`; **re-apply after any re-download of the checkpoint**.
+
+### Validation (2026-09-26)
+
+1,017,549-token needle found cold (141s) and warm (2.8s); tool calling and
+CJK/emoji clean (this checkpoint does not reproduce upstream #54150's invalid
+UTF-8 on SM120); 0 preemptions, 0 errors.
+
+### Benchmarks (2026-09-26, NVFP4+MTP3, offload on, b12x oneshot — c=1, 16 prompts per cell, zero failures)
+
+`vllm bench serve` (same protocol as the 09-21/09-11 tables) against the
+NVFP4+MTP deployment — job `vllm-bench-manual-spawn-muipn6n7-0o010`, pod
+`-dcdrk`, 18:15-18:43 UTC:
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len |
+|---|---|---|---|---|---|---|
+| 2048 | 256 | 129.38 | 189ms | 17.33ms | 7.07 | 2.48 |
+| 8192 | 1024 | 129.08 | 327ms | 17.40ms | 7.52 | 2.34 |
+| 32768 | 4096 | 134.45 | 325ms | 17.45ms | 7.35 | 2.37 |
+| 131072 | 8192 | 134.60 | 681ms | 17.65ms | 7.29 | 2.47 |
+
+- **32K/128K TTFT are warm external-prefix-hit latencies, not cold prefill.**
+  The bench's fixed-seed random prompts were resident in the 100 GiB offload
+  pool from earlier runs the same day (GPU prefix hits 72-79%, external hits
+  climbing 11%→36% over the run). Cold prefill on the NVFP4 stack measured
+  ~10.1K tok/s in the 17:46 probe run; the fp8-era comparators (3217ms/10471ms)
+  are cold and not comparable to this row.
+- Decode is the MTP output rate: acceptance 2.34-2.48 tokens/step on the
+  random dataset (per-position ~66-74 / 42-48 / 27-32%). Median ITL
+  17.3-17.7ms is the step cadence (bursts of ~2.4-2.5 tokens per step);
+  median TPOT 7.07-7.52ms is the per-token spacing. The cutover validation's
+  natural-text numbers were higher (2.81 tokens/step → 157-165 tok/s, ITL
+  6.0-6.4ms) — the random dataset accepts less.
+- PSU over the bench window: 238W idle floor, 1.18kW avg, 1.27kW peak
+  (fp8 era: 1.28kW avg / 1.76kW peak — NVFP4 + gmu 0.69 draws substantially
+  less).
+
+## GLM-5.3-Flash fp8 era — historical (2026-09-23 0.30 rebase; superseded by NVFP4+MTP 2026-09-26)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
 `registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:f8cdce48` built from
@@ -19,9 +151,12 @@ sparse-MLA decode warmup), and `VLLM_FLASHINFER_AUTOTUNE_PROCESS_GROUP` is
 no longer set. KV offloading is enabled on upstream's native backend (see
 *kv-offload status* below).
 
-Boot verification of the 2026-09-23 rebase (f8cdce48) is **pending** — run
-the SM120-GLM53-FLASH.md boot-verify checklist on the first boot (Flux rolls
-`vllm-0` on reconcile). Previous build (a9725bcb), boot-verified 2026-09-22
+Boot verification of the 2026-09-23 rebase (f8cdce48) on the fp8 config was
+completed 2026-09-26 (backend `FLASHINFER_MLA_SPARSE_SM120` + `fp8_ds_mla`,
+available KV 7.68 GiB, auto-fit full 1M at 1,064,361 tokens, autotune + CUDA
+graphs FULL 3/3 / PIECEWISE 4/4 clean, health 200 OK, 1,677 successful
+requests / 0 errors); the config was superseded by the NVFP4+MTP cutover the
+same day. Previous build (a9725bcb), boot-verified 2026-09-22
 (pod `vllm-0`, uid `404ab979`, after raising `--limit-mm-per-prompt` to 20
 images): backend
 `FLASHINFER_MLA_SPARSE_SM120` + `fp8_ds_mla`, available KV 7.68 GiB, auto-fit
@@ -237,8 +372,8 @@ vs the 09-11 no-offload 0.29 baseline: long-context prefill improved on the
 Short-context decode eases ~3% (89.0-89.7 → 86.2-86.8 tok/s; median ITL
 10.33-10.34 → 10.73-10.74ms, +0.4ms). TTFT percentiles stay tight at every
 length (P99 within ~25ms of P50); no failed requests, no preemptions. This
-is the current production profile — the table below is the no-offload
-reference build.
+was the production profile until the 2026-09-26 NVFP4+MTP cutover — the
+table below is the no-offload reference build.
 
 ### Benchmarks (2026-09-11, no-offload build, b12x oneshot — concurrency 1, 16 prompts per cell, zero failures)
 

@@ -40,8 +40,9 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
+  -e VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,trtllm::fused_moe::gemm2 \
   ngpitt/vllm:0.30.0-sm120-cu130 \
-    /models/zai-org/GLM-5.3-Flash \
+    /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \
       --enable-expert-parallel \
@@ -49,12 +50,14 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.97 \
+      --gpu-memory-utilization 0.69 \
+      --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
       --kv-offloading-size 100 \
       --kv-offloading-backend native \
       --enable-chunked-prefill \
+      --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
       --enable-auto-tool-choice \

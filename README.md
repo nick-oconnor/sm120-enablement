@@ -1,6 +1,6 @@
 # Single-Outlet Inference
 
-A workstation serving [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)
+A workstation serving [GLM-5.3-Flash](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4)
 (sparse-MLA MoE with native vision, 1M-token context) with
 [vLLM](https://github.com/nick-oconnor/vllm).
 
@@ -8,18 +8,20 @@ A workstation serving [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Fla
 
 ## Benchmarks
 
-GLM-5.3-Flash on vLLM `0.30.0-sm120-cu130` with native KV offload and the
-b12x PCIe one-shot all-reduce (2026-09-21). 16 prompts, concurrency 1,
-random dataset, zero failed requests.
+GLM-5.3-Flash (NVFP4 checkpoint, MTP3 speculative decoding) on vLLM
+`0.30.0-sm120-cu130` with native KV offload and the b12x PCIe one-shot
+all-reduce (2026-09-26). 16 prompts, concurrency 1, random dataset, zero
+failed requests. Decode is the MTP output rate (~2.4 accepted tokens/step);
+32K/128K TTFT are warm prefix-cache hits, not cold prefill.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 86.15          | 237ms     | 10.73ms  |
-| 8192      | 1024       | 86.59          | 850ms     | 10.73ms  |
-| 32768     | 4096       | 86.81          | 3217ms    | 10.74ms  |
-| 131072    | 8192       | 82.47          | 10471ms   | 10.86ms  |
+| 2048      | 256        | 129.38         | 189ms     | 17.33ms  |
+| 8192      | 1024       | 129.08         | 327ms     | 17.40ms  |
+| 32768     | 4096       | 134.45         | 325ms     | 17.45ms  |
+| 131072    | 8192       | 134.60         | 681ms     | 17.65ms  |
 
-PSU output (self-reported via the PSU's USB interface): 234W idle, 1.28kW under bench load, 1.76kW peak.
+PSU output (self-reported via the PSU's USB interface): 238W idle, 1.18kW under bench load, 1.27kW peak.
 
 ## Hardware
 
@@ -60,12 +62,15 @@ PCIe Speed (between GPU pairs):
 
 ## Model
 
-- [zai-org/GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)
+- [nvidia/GLM-5.3-Flash-NVFP4](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4),
+  the ModelOpt NVFP4 quantization of
+  [zai-org/GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)
   (`Glm5NextForConditionalGeneration`, sparse-MLA MoE, 1M-token context, native
-  vision: 448px tiles / patch 14 / 256 tokens per tile)
-- 62-shard checkpoint served from `/models/zai-org/GLM-5.3-Flash` on the local
-  models mount; SM120 serving path is the hardware-verified fp8 + FlashInfer
-  NoPE sparse-MLA port (see `notes/serving-config.md`)
+  vision: 448px tiles / patch 14 / 256 tokens per tile; experts + dense MLP
+  W4A4, attention / router / lm_head / MTP head at source precision)
+- Served from the local models mount with MTP speculative decoding (3 draft
+  tokens); SM120 serving path is the hardware-verified FlashInfer NoPE
+  sparse-MLA port (see `notes/serving-config.md`)
 
 ## vLLM Build
 
@@ -123,25 +128,33 @@ docker run --rm --gpus all --shm-size 120g \
   -e MAX_JOBS=32 \
 # b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
+# skip autotuning the trtllm fused_moe tactics — autotuning them deadlocks the
+# EP ranks out of phase (CUTLASS is the MoE backend; fp4_gemm autotune still runs)
+  -e VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,trtllm::fused_moe::gemm2 \
   vllm:0.30.0-sm120-cu130 \
-    /models/zai-org/GLM-5.3-Flash \
+    /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
 # 4-way TP across the four GPUs
       --tensor-parallel-size 4 \
       --enable-expert-parallel \
       --trust-remote-code \
-# auto-fit; holds the full 1M (7.68 GiB KV / 1,064,361 tokens) with the
+# auto-fit; holds the full 1M (8.50 GiB KV / 1,064,126 tokens) with the
 # indexer-workspace right-size (vllm #55222)
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.97 \
+# leaves ~24 GiB/GPU free — this rig shares two cards with an image-generation workload
+      --gpu-memory-utilization 0.69 \
+# NVFP4 MoE; pinned — `auto` resolves here today but is free to drift
+      --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
 # native CPU KV offload: 100 GiB pool mmap'd in /dev/shm
       --kv-offloading-size 100 \
       --kv-offloading-backend native \
       --enable-chunked-prefill \
+# MTP speculative decoding, 3 draft tokens (~1.8 accepted tokens/step)
+      --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
       --enable-auto-tool-choice \
