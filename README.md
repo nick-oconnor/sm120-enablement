@@ -76,15 +76,19 @@ PCIe Speed (between GPU pairs):
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
 branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
-`9f07d023d0` — GLM-5.3-Flash model support is native upstream since
+`924707f1bf` — GLM-5.3-Flash model support is native upstream since
 vllm-project #53906). On top of upstream, the branch carries the ocnr SM120
-NoPE sparse-MLA port plus two open-upstream patches: #55222 (both halves —
-right-sizes the indexer prefill workspace, without which #55221 cuts the
-auto-fit `max_model_len` to 516K and loses the 1M context, and sizes the
-prefill chunk budget in compressed rows) and #55601 (seeds the
+NoPE sparse-MLA port, three open-upstream patches — #55222 (both halves in
+one commit: right-sizes the indexer prefill workspace, without which #55221
+cuts the auto-fit `max_model_len` to 516K and loses the 1M context, and
+sizes the prefill chunk budget in compressed rows), #55601 (seeds the
 hybrid mamba state index by `mamba_block_size` — the prefix-cache
-KV-corruption fix). Upstream's #57477 (kpool tail-seed stride fix for the
-silent KV-cache poisoning) is already in the base. See
+KV-corruption fix) and #57635 (per-rank FlashInfer autotune cache files) —
+plus two ocnr fixes: the SM120 sparse-MLA warmup no longer tunes
+leader-only, which left asymmetric tuner state that deadlocked the
+synchronized autotune, and the mamba aligned-split now derives chunk ends
+from the resolved block alignment. Upstream's #57477 (kpool tail-seed
+stride fix for the silent KV-cache poisoning) is already in the base. See
 [`notes/serving-config.md`](notes/serving-config.md).
 
 Build constraints:
@@ -107,7 +111,7 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:f8cdce48bc2ab7e64573c2338a633142b4e6e25c606f814849acf29b22ac011a`).
+Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:87feab60251be80597bf7d901e964ce954b219167898b306cf81ce2894c339e2`).
 
 ## vLLM Execution
 
@@ -128,9 +132,6 @@ docker run --rm --gpus all --shm-size 120g \
   -e MAX_JOBS=32 \
 # b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
-# skip autotuning the trtllm fused_moe tactics — autotuning them deadlocks the
-# EP ranks out of phase (CUTLASS is the MoE backend; fp4_gemm autotune still runs)
-  -e VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,trtllm::fused_moe::gemm2 \
   vllm:0.30.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \

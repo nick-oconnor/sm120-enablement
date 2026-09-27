@@ -1,10 +1,18 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-09-26)
+## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-09-27)
 
-Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image unchanged
-(`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:f8cdce48` — the
-2026-09-23 rebase build). Checkpoint switched to
+Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
+`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:87feab60` — the
+2026-09-27 rebase build (`0.30` rebased onto upstream main `924707f1bf`,
+~202 commits: FlashInfer **0.7.0** (#58069), the GLM-5.3-Flash
+corruption-hunt fixes #58454 (kpool pool selection with spec decode) and
+#58368 (prompt-tail prefix-cache hits with MTP), the profiling-allocator
+fix #58430, the GLM5.3 metadata-op optimization #58450). The branch
+carries #55222 (both halves, one squashed commit), #55601, #57635
+(per-rank FlashInfer autotune cache), two ocnr autotune/scheduler fixes
+and the SM120 NoPE sparse-MLA port — full list in
+`vllm/SM120-GLM53-FLASH.md`. Checkpoint stayed on
 `nvidia/GLM-5.3-Flash-NVFP4` (ModelOpt recipe
 `nvfp4_experts_dense_mlp-kv_fp8_cast`: experts + dense MLP W4A4, attention /
 router / norms / lm_head / MTP head at source precision, fp8-cast KV recipe)
@@ -37,12 +45,11 @@ vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
   --default-chat-template-kwargs '{"thinking": true}'
 ```
 
-Env adds
-`VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,trtllm::fused_moe::gemm2`
-(see *EP autotune deadlock* below); everything else carries over from the fp8
-era (`HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`,
-`OMP_NUM_THREADS=4`, `MAX_JOBS=32`, `VLLM_ENABLE_PCIE_ALLREDUCE=1`). dshm
-stays 120Gi for the 100 GiB offload mmap.
+Env carries over from the fp8 era (`HF_HUB_OFFLINE=1`,
+`NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`,
+`MAX_JOBS=32`, `VLLM_ENABLE_PCIE_ALLREDUCE=1`); dshm stays 120Gi for the
+100 GiB offload mmap. `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS` is **gone** —
+see *EP autotune deadlock* below.
 
 ### Boot (2026-09-26, f8cdce48, NVFP4+MTP3)
 
@@ -72,14 +79,41 @@ slower. k=3 over k=1 (136-139 tok/s): the +19% outweighs shrinking the 1M
 headroom from 1.05x to 1.01x. Decode at c=1: 89 → 157-165 tok/s
 (ITL 10.3 → 6.0-6.4 ms).
 
-### EP autotune deadlock (fixed by skip-ops env)
+### EP autotune deadlock (fixed by the #57635 + leader-only-warmup carries)
 
 FlashInfer autotunes the trtllm `fused_moe` tactics even though CUTLASS is
-the selected NVFP4 MoE backend, and the EP ranks fall out of phase and
-deadlock: rank 0 completes while ranks 1-3 sit at 0% forever, visible only as
-repeated `shm_broadcast "No available shared memory broadcast block"` from
-EngineCore. `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,trtllm::fused_moe::gemm2`
-skips those two ops; fp4_gemm autotune still runs.
+the selected NVFP4 MoE backend, and the EP ranks fell out of phase and
+deadlocked: rank 0 completed while ranks 1-3 sat at 0% forever, visible only
+as repeated `shm_broadcast "No available shared memory broadcast block"`
+from EngineCore.
+
+- 2026-09-26: `VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS=trtllm::fused_moe::gemm1,gemm2`
+  dodged it (fp4_gemm autotune still ran).
+- 2026-09-27, on FlashInfer 0.7.0, `fp4_gemm` deadlocked the same way; the
+  skip list grew (one boot) and then went away entirely. Two carried fixes
+  are the actual resolution: **#57635** persists the autotune cache per rank
+  (a warm cache root could no longer desync a later boot), and the ocnr
+  leader-only fix (vllm `022c5085fa`) stops the SM120 sparse-MLA warmup from
+  tuning leader-only — on the NVFP4 checkpoint it tuned the linear and MoE
+  GEMMs too, so rank 0 hit its live in-process cache and skipped the
+  per-tactic all-reduce while ranks 1-3 blocked in it. Broadcasting the file
+  cannot equalize the ranks: FlashInfer consults the live `profiling_cache`
+  before file configs, and MoE entries are keyed by tp/ep rank.
+- Verified on 4x RTX PRO 6000 (TP4+EP) with NVFP4 + MTP3 + FlashInfer 0.7.0
+  and **no skip-ops env**: boots to ready; `fp4_gemm` and
+  `trtllm::fused_moe::gemm1` tune to completion on every rank; MTP
+  acceptance 83%; decode 170-186 tok/s (ITL 5.4-5.9 ms) vs 161-172 under the
+  skip-ops workaround — faster, because these ops are now actually tuned.
+  Trade-off: sparse-MLA decode shapes from the mixed-batch warmup fall back
+  to FlashInfer's tactic heuristic (no measurable decode regression).
+
+### Boot (2026-09-27, 87feab60, NVFP4+MTP3, FlashInfer 0.7.0)
+
+Same boot shape as 09-26 (attention `FLASHINFER_MLA_SPARSE_SM120` +
+`fp8_ds_mla`, MoE `FLASHINFER_CUTLASS` NVFP4); the rebase adds the upstream
+corruption fixes #58454/#58368 and profiling fix #58430 to the base. Second
+boot with the persistent cache root completes autotune cleanly (the #57635
+per-rank cache).
 
 ### Checkpoint prerequisite (host-side, not in git)
 
