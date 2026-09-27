@@ -166,6 +166,30 @@ NVFP4+MTP deployment — job `vllm-bench-manual-spawn-muipn6n7-0o010`, pod
   (fp8 era: 1.28kW avg / 1.76kW peak — NVFP4 + gmu 0.69 draws substantially
   less).
 
+### Benchmarks (2026-09-27, 87feab60 build, NVFP4+MTP3, offload on, b12x oneshot — c=1, 16 prompts per cell, zero failures)
+
+`vllm bench serve` (same protocol) against the 87feab60 deployment with the
+autotune fix (vllm `022c5085fa`) and no skip-ops env — job
+`vllm-bench-manual-spawn-mukcrykg-53obk`, pod `-q44mv`, 21:51-22:20 UTC, on
+a fresh boot: empty GPU cache and offload pool, so **every TTFT is cold
+prefill** (the 09-26 run served warm prefix hits and is not TTFT-comparable).
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len |
+|---|---|---|---|---|---|---|
+| 2048 | 256 | 129.43 | 189ms | 16.47ms | 6.93 | 2.36 |
+| 8192 | 1024 | 127.36 | 702ms | 16.54ms | 7.17 | 2.31 |
+| 32768 | 4096 | 130.75 | 2468ms | 16.62ms | 7.21 | 2.36 |
+| 131072 | 8192 | 128.92 | 9302ms | 16.79ms | 6.78 | 2.53 |
+
+- Decode holds 127-131 tok/s at every length — within noise of the 09-26
+  skip-ops build (129-135 warm) — and the leader-only-tuning removal costs
+  nothing measurable while the tuned MoE ops raise peak power: PSU over the
+  window 262W idle floor, 1.15kW avg, **1.68kW peak** (09-26 warm run
+  peaked at 1.27kW; this run prefills cold at 128K).
+- Cold prefill rates (input/TTFT): ~10.9K tok/s at 2K, 11.7K at 8K, 13.3K at
+  32K, 14.1K at 128K — the chunked-prefill amortization curve on the NVFP4
+  stack; the fp8-era cold comparator was 12.5K tok/s at 128K (10471ms).
+
 ## GLM-5.3-Flash fp8 era — historical (2026-09-23 0.30 rebase; superseded by NVFP4+MTP 2026-09-26)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
