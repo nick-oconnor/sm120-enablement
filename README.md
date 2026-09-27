@@ -33,7 +33,7 @@ PSU output (self-reported via the PSU's USB interface): 262W idle, 1.15kW under 
 | GPU | 4x NVIDIA RTX PRO 6000 Blackwell Max-Q, ECC enabled |
 | Interconnect | 4x PCIe Gen 5 x16 |
 | PSU | 1x Corsair HX1500i, 20A 120V circuit |
-| OS / driver | Debian 13, kernel 6.12.101, NVIDIA 610.57.04, CUDA 13.3 |
+| OS / driver | Debian 13, kernel 6.12.107, NVIDIA 610.57.04, CUDA 13.3 |
 
 Memory Bandwidth:
 
