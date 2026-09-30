@@ -82,6 +82,8 @@ branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
 vllm-project #53906). The branch carries, vs upstream:
 
 - the SM120 NoPE sparse-MLA port (hardware-verified serving path)
+- the b12x PCIe one-shot all-reduce backend (`VLLM_ENABLE_PCIE_ALLREDUCE`)
+- the SM120 image build (Blackwell consumer)
 - #55222 — right-sizes the indexer prefill workspace and sizes the prefill
   chunk budget in compressed rows; without it, #55221 caps auto-fit
   `max_model_len` at 516K and loses the 1M context
@@ -90,7 +92,9 @@ vllm-project #53906). The branch carries, vs upstream:
 - #57635 — per-rank FlashInfer autotune cache files
 - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
   asymmetric tuner state that deadlocked the synchronized autotune
-- mamba aligned-split derives chunk ends from the resolved block alignment
+- mamba aligned-split uses the scheduler-resolved block size;
+  `cache_config.block_size` gets reassigned to the smallest
+  prefix-cacheable group
 
 Full fix list: [`notes/serving-config.md`](notes/serving-config.md).
 
