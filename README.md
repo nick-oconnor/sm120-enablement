@@ -78,20 +78,21 @@ show accuracy parity).
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
 branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
-`924707f1bf` — GLM-5.3-Flash model support is native upstream since
-vllm-project #53906). On top of upstream, the branch carries the ocnr SM120
-NoPE sparse-MLA port, three open-upstream patches — #55222 (both halves in
-one commit: right-sizes the indexer prefill workspace, without which #55221
-cuts the auto-fit `max_model_len` to 516K and loses the 1M context, and
-sizes the prefill chunk budget in compressed rows), #55601 (seeds the
-hybrid mamba state index by `mamba_block_size` — the prefix-cache
-KV-corruption fix) and #57635 (per-rank FlashInfer autotune cache files) —
-plus two ocnr fixes: the SM120 sparse-MLA warmup no longer tunes
-leader-only, which left asymmetric tuner state that deadlocked the
-synchronized autotune, and the mamba aligned-split now derives chunk ends
-from the resolved block alignment. Upstream's #57477 (kpool tail-seed
-stride fix for the silent KV-cache poisoning) is already in the base. See
-[`notes/serving-config.md`](notes/serving-config.md).
+`924707f1bf`; GLM-5.3-Flash model support is native upstream since
+vllm-project #53906). The branch carries, vs upstream:
+
+- the ocnr SM120 NoPE sparse-MLA port (hardware-verified serving path)
+- #55222 — right-sizes the indexer prefill workspace and sizes the prefill
+  chunk budget in compressed rows; without it, #55221 caps auto-fit
+  `max_model_len` at 516K and loses the 1M context
+- #55601 — seeds the hybrid mamba state index by `mamba_block_size`
+  (the prefix-cache KV-corruption fix)
+- #57635 — per-rank FlashInfer autotune cache files
+- SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
+  asymmetric tuner state that deadlocked the synchronized autotune
+- mamba aligned-split derives chunk ends from the resolved block alignment
+
+Full fix list: [`notes/serving-config.md`](notes/serving-config.md).
 
 Build constraints:
 
