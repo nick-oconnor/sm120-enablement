@@ -62,15 +62,17 @@ PCIe Speed (between GPU pairs):
 
 ## Model
 
-- [nvidia/GLM-5.3-Flash-NVFP4](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4),
-  the ModelOpt NVFP4 quantization of
-  [zai-org/GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash)
-  (`Glm5NextForConditionalGeneration`, sparse-MLA MoE, 1M-token context, native
-  vision: 448px tiles / patch 14 / 256 tokens per tile; experts + dense MLP
-  W4A4, attention / router / lm_head / MTP head at source precision)
-- Served from the local models mount with MTP speculative decoding (3 draft
-  tokens); SM120 serving path is the hardware-verified FlashInfer NoPE
-  sparse-MLA port (see `notes/serving-config.md`)
+[GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash) — sparse-MLA
+MoE, 320B total / 18B active parameters, 45 layers, 1M-token context,
+text + image + video input, text output. Approaches Claude Opus 4.8 on
+coding and agentic benchmarks.
+
+Served checkpoint:
+[nvidia/GLM-5.3-Flash-NVFP4](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4),
+NVIDIA's NVFP4 quantization of GLM-5.3-Flash — MoE experts and dense MLP run
+4-bit weights and activations, attention / router / lm_head / MTP head stay
+at source precision (~3.3× smaller than the 16-bit model; NVIDIA's evals
+show accuracy parity).
 
 ## vLLM Build
 
