@@ -81,7 +81,7 @@ branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
 `924707f1bf`; GLM-5.3-Flash model support is native upstream since
 vllm-project #53906). The branch carries, vs upstream:
 
-- the ocnr SM120 NoPE sparse-MLA port (hardware-verified serving path)
+- the SM120 NoPE sparse-MLA port (hardware-verified serving path)
 - #55222 — right-sizes the indexer prefill workspace and sizes the prefill
   chunk budget in compressed rows; without it, #55221 caps auto-fit
   `max_model_len` at 516K and loses the 1M context
