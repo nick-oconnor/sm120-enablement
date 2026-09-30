@@ -10,7 +10,7 @@ A workstation serving [GLM-5.3-Flash](https://huggingface.co/nvidia/GLM-5.3-Flas
 
 GLM-5.3-Flash (NVFP4 checkpoint, MTP3 speculative decoding) on vLLM
 `0.30.0-sm120-cu130` with native KV offload and the b12x PCIe one-shot
-all-reduce (2026-09-27). 16 prompts, concurrency 1, random dataset, zero
+all-reduce. 16 prompts, concurrency 1, random dataset, zero
 failed requests. Decode is the MTP output rate (~2.4 accepted tokens/step);
 all TTFTs are cold prefill (fresh boot, empty cache).
 
