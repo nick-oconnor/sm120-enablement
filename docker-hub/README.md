@@ -15,22 +15,22 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
   support is native upstream since vllm-project #53906 — no fork overlay is
   needed. The image carries, vs upstream:
 
-  - the SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
-    priority, indexer buffer pin)
-  - the b12x PCIe one-shot all-reduce backend (`VLLM_ENABLE_PCIE_ALLREDUCE`)
-  - the SM120 image build (Blackwell consumer)
-  - #55222 — right-sizes the indexer prefill workspace and sizes the prefill
-    chunk budget in compressed rows; without it, #55221 caps auto-fit
-    `max_model_len` at 516K and loses the 1M context (merged upstream after
-    this branch's base)
-  - #55601 — seeds the hybrid mamba state index by `mamba_block_size`
-    (the prefix-cache KV-corruption fix; open upstream)
-  - #57635 — per-rank FlashInfer autotune cache files (open upstream)
-  - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
-    asymmetric tuner state that deadlocked the synchronized autotune
-  - mamba aligned-split uses the scheduler-resolved block size;
-    `cache_config.block_size` gets reassigned to the smallest
-    prefix-cacheable group
+   - the SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
+     priority, indexer buffer pin)
+   - the b12x PCIe one-shot all-reduce backend (`VLLM_ENABLE_PCIE_ALLREDUCE`)
+   - the SM120 image build (Blackwell consumer)
+   - #55222 — right-sizes the indexer prefill workspace and sizes the prefill
+     chunk budget in compressed rows; without it, #55221 caps auto-fit
+     `max_model_len` at 516K and loses the 1M context (merged upstream after
+     this branch's base)
+   - #55601 — seeds the hybrid mamba state index by `mamba_block_size`
+     (the prefix-cache KV-corruption fix; open upstream)
+   - #57635 — per-rank FlashInfer autotune cache files (open upstream)
+   - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
+     asymmetric tuner state that deadlocked the synchronized autotune
+   - mamba aligned-split uses the scheduler-resolved block size;
+     `cache_config.block_size` gets reassigned to the smallest
+     prefix-cacheable group
 
   Upstream's #57477 (kpool tail-seed stride fix for the silent KV-cache
   poisoning) is in the base. KV offloading is upstream native
@@ -59,18 +59,19 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 
 | Flag | Notes |
 | --- | --- |
-| `--shm-size` | NCCL bootstrap + engine IPC + the 100 GiB native KV-offload mmap |
+| `--shm-size` | NCCL bootstrap, engine IPC, 100 GiB KV-offload mmap |
 | `HF_HUB_OFFLINE` | weights come from the local `/models` mount, not the Hub |
-| `NCCL_P2P_LEVEL` | NCCL can't auto-detect P2P from inside the container; declare it manually |
-| `RAYON_NUM_THREADS` / `OMP_NUM_THREADS` | cap the Rayon thread pool (used by tokenizers/parquet) |
+| `NCCL_P2P_LEVEL` | NCCL can't auto-detect P2P inside the container |
+| `RAYON_NUM_THREADS` | cap the Rayon thread pool (tokenizers/parquet) |
+| `OMP_NUM_THREADS` | cap the OpenMP thread pool |
 | `MAX_JOBS` | cap JIT parallelism so container PIDs stay sane |
-| `VLLM_ENABLE_PCIE_ALLREDUCE` | b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives |
+| `VLLM_ENABLE_PCIE_ALLREDUCE` | enables the b12x one-shot all-reduce backend |
 | `--tensor-parallel-size` | 4-way TP across the four GPUs |
-| `--max-model-len` | auto-fit; holds the full 1M (8.50 GiB KV / 1,064,126 tokens) with the indexer-workspace right-size (vllm #55222) |
-| `--gpu-memory-utilization` | leaves ~24 GiB/GPU free — this rig shares two cards with an image-generation workload |
-| `--moe-backend` | NVFP4 MoE; pinned — `auto` resolves here today but is free to drift |
-| `--kv-offloading-*` | native CPU KV offload: 100 GiB pool mmap'd in `/dev/shm` |
-| `--speculative-config` | MTP speculative decoding, 3 draft tokens (~1.8 accepted tokens/step) |
+| `--max-model-len` | auto-fit; holds the full 1M via the #55222 right-size |
+| `--gpu-memory-utilization` | leaves ~24 GiB/GPU free for the image workload |
+| `--moe-backend` | NVFP4 MoE; pinned, `auto` may drift |
+| `--kv-offloading-*` | native CPU KV offload: 100 GiB pool in `/dev/shm` |
+| `--speculative-config` | MTP speculative decoding, 3 draft tokens |
 | `--default-chat-template-kwargs` | force thinking mode on every turn |
 
 ```bash

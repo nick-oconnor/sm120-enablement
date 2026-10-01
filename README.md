@@ -21,7 +21,8 @@ all TTFTs are cold prefill (fresh boot, empty cache).
 | 32768     | 4096       | 130.75         | 2468ms    | 16.62ms  |
 | 131072    | 8192       | 128.92         | 9302ms    | 16.79ms  |
 
-PSU output (self-reported via the PSU's USB interface): 262W idle, 1.15kW under bench load, 1.68kW peak.
+PSU output (self-reported via the PSU's USB interface): 262W idle, 1.15kW
+under bench load, 1.68kW peak.
 
 ## Hardware
 
@@ -118,24 +119,28 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:3399d4fc8fc5ae9fcbd393b09f00adbb57fd67939246108fe7f98b139ded826a`).
+Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130][hub] (amd64,
+`sha256:3399d4fc8fc5ae9fcbd393b09f00adbb57fd67939246108fe7f98b139ded826a`).
+
+[hub]: https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130
 
 ## vLLM Execution
 
 | Flag | Notes |
 | --- | --- |
-| `--shm-size` | NCCL bootstrap + engine IPC + the 100 GiB native KV-offload mmap |
+| `--shm-size` | NCCL bootstrap, engine IPC, 100 GiB KV-offload mmap |
 | `HF_HUB_OFFLINE` | weights come from the local `/models` mount, not the Hub |
-| `NCCL_P2P_LEVEL` | NCCL can't auto-detect P2P from inside the container; declare it manually |
-| `RAYON_NUM_THREADS` / `OMP_NUM_THREADS` | cap the Rayon thread pool (used by tokenizers/parquet) |
+| `NCCL_P2P_LEVEL` | NCCL can't auto-detect P2P inside the container |
+| `RAYON_NUM_THREADS` | cap the Rayon thread pool (tokenizers/parquet) |
+| `OMP_NUM_THREADS` | cap the OpenMP thread pool |
 | `MAX_JOBS` | cap JIT parallelism so container PIDs stay sane |
-| `VLLM_ENABLE_PCIE_ALLREDUCE` | b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives |
+| `VLLM_ENABLE_PCIE_ALLREDUCE` | enables the b12x one-shot all-reduce backend |
 | `--tensor-parallel-size` | 4-way TP across the four GPUs |
-| `--max-model-len` | auto-fit; holds the full 1M (8.50 GiB KV / 1,064,126 tokens) with the indexer-workspace right-size (vllm #55222) |
-| `--gpu-memory-utilization` | leaves ~24 GiB/GPU free — this rig shares two cards with an image-generation workload |
-| `--moe-backend` | NVFP4 MoE; pinned — `auto` resolves here today but is free to drift |
-| `--kv-offloading-*` | native CPU KV offload: 100 GiB pool mmap'd in `/dev/shm` |
-| `--speculative-config` | MTP speculative decoding, 3 draft tokens (~1.8 accepted tokens/step) |
+| `--max-model-len` | auto-fit; holds the full 1M via the #55222 right-size |
+| `--gpu-memory-utilization` | leaves ~24 GiB/GPU free for the image workload |
+| `--moe-backend` | NVFP4 MoE; pinned, `auto` may drift |
+| `--kv-offloading-*` | native CPU KV offload: 100 GiB pool in `/dev/shm` |
+| `--speculative-config` | MTP speculative decoding, 3 draft tokens |
 | `--default-chat-template-kwargs` | force thinking mode on every turn |
 
 ```bash
