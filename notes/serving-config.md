@@ -15,7 +15,8 @@ autotune/scheduler fixes and the SM120 NoPE sparse-MLA port — full list in
 `vllm/SM120-GLM53-FLASH.md`. The rebuild re-pins the 09-27 tree
 (`87feab60`) after a one-day rebase onto upstream `2eaa3bc5ac` (built as
 `7a7d3d10`) was reverted as broken — same tree; the digest moved only via
-the commit-timestamp build stamp. Pushed to Docker Hub 2026-10-01. Checkpoint stayed on
+the commit-timestamp build stamp (symptom:
+`incident-recut-kv-poisoning.md`). Pushed to Docker Hub 2026-10-01. Checkpoint stayed on
 `nvidia/GLM-5.3-Flash-NVFP4` (ModelOpt recipe
 `nvfp4_experts_dense_mlp-kv_fp8_cast`: experts + dense MLP W4A4, attention /
 router / norms / lm_head / MTP head at source precision, fp8-cast KV recipe)

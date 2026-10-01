@@ -68,18 +68,30 @@ vLLM `0.25.1+sm120.cu131`) are historical.
   kpool tail seed kernel addressing tail blocks densely against a
   padded-stride tail view, so every prefill poisoned unrelated indexer
   blocks). See `serving-config.md` for the #57477 probe and regression test.
+- [`incident-recut-kv-poisoning.md`](incident-recut-kv-poisoning.md) — the
+  2026-09-30 re-cut onto upstream `2eaa3bc5ac` (image `7a7d3d10`) degenerated
+  the served agent into repeated tool-call loops (classic KV-poisoning
+  signature: progressive repetition under prefix-cache-heavy sessions,
+  cleared by rollback). **Resolved by revert** — back to the 09-27 tree
+  (`3399d4fc`); prime suspect the #54076 scheduler carry (state-grid units
+  divergence vs the #55601 worker seed).
 
 ## TL;DR current status
 
-- **Serving (current)**: GLM-5.3-Flash on `0.30.0-sm120-cu130`, `0.30`
-  branch re-cut onto upstream main `4868312128` (2026-09-20), full 1M
-  context (1,064,361 KV tokens, 1.02x), fp8 KV, b12x PCIe one-shot
-  all-reduce, native KV offload. See `serving-config.md`.
+- **Serving (current)**: GLM-5.3-Flash NVFP4 + MTP3 on `0.30.0-sm120-cu130`,
+  `0.30` branch on upstream main `924707f1bf` (2026-10-01 rebuild,
+  `3399d4fc`), full 1M context (8.50 GiB KV, 1,064,126 tokens, 1.01x),
+  b12x PCIe one-shot all-reduce, native KV offload. See `serving-config.md`.
 - **0.30 context regression**: **fixed** — the indexer prefill gather
   workspace was sized in tokens rather than pools, burning 5.16 GiB/GPU and
-  cutting auto-fit to 516,096. Upstream #55221/#55222 carried on the branch;
-  available KV 3.81 → 7.68 GiB. The 4.19 GiB CUDA-graph *estimate* is a red
-  herring and must not be disabled — see `serving-config.md`.
+  cutting auto-fit to 516,096. Upstream #55221/#55222 (merged upstream
+  2026-09-29, still carried on the branch until its base moves past it). The
+  4.19 GiB CUDA-graph *estimate* is a red herring and must not be disabled —
+  see `serving-config.md`.
+- **Recut build (upstream `2eaa3bc5ac` base)**: **reverted** 2026-10-01 — the
+  served agent degenerated into tool-call loops (classic KV-poisoning
+  signature); prime suspect the #54076 scheduler carry replacing the
+  verified LCM one-liner. See `incident-recut-kv-poisoning.md`.
 - **kpool tail seed poisoning**: **fixed** — the NVIDIA
   `_kpool_tail_seed_kernel` addressed tail blocks densely while the tail
   tensor aliases the indexer tensor with the indexer's padded block stride
