@@ -123,51 +123,58 @@ Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r
 ## vLLM Execution
 
 ```bash
-# NCCL bootstrap + engine IPC + the 100 GiB native KV-offload mmap
+# NCCL bootstrap + engine IPC + the 100 GiB native KV-offload mmap (--shm-size 120g)
+# weights come from the local /models mount, not the Hub (-e HF_HUB_OFFLINE=1)
+# NCCL can't auto-detect P2P from inside the container; declare it manually
+# (-e NCCL_P2P_LEVEL=NODE)
+# cap the Rayon thread pool (used by tokenizers/parquet)
+# (-e RAYON_NUM_THREADS=4, -e OMP_NUM_THREADS=4)
+# cap JIT parallelism so container PIDs stay sane (-e MAX_JOBS=32)
+# b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
+# (-e VLLM_ENABLE_PCIE_ALLREDUCE=1)
+# 4-way TP across the four GPUs (--tensor-parallel-size 4)
+# auto-fit; holds the full 1M (8.50 GiB KV / 1,064,126 tokens) with the
+# indexer-workspace right-size (vllm #55222) (--max-model-len auto)
+# leaves ~24 GiB/GPU free — this rig shares two cards with an image-generation
+# workload (--gpu-memory-utilization 0.69)
+# NVFP4 MoE; pinned — `auto` resolves here today but is free to drift
+# (--moe-backend flashinfer_cutlass)
+# native CPU KV offload: 100 GiB pool mmap'd in /dev/shm
+# (--kv-offloading-size 100 --kv-offloading-backend native)
+# MTP speculative decoding, 3 draft tokens (~1.8 accepted tokens/step)
+# (--speculative-config)
+# force thinking mode on every turn (--default-chat-template-kwargs)
 docker run --rm --gpus all --shm-size 120g \
   -v <host-models-path>:/models:ro \
   -v <host-cache-path>:/home/vllm \
   -p 8000:8000 \
-# weights come from the local /models mount, not the Hub
   -e HF_HUB_OFFLINE=1 \
-# NCCL can't auto-detect P2P from inside the container; declare it manually
   -e NCCL_P2P_LEVEL=NODE \
-# cap the Rayon thread pool (used by tokenizers/parquet)
   -e RAYON_NUM_THREADS=4 \
   -e OMP_NUM_THREADS=4 \
-# cap JIT parallelism so container PIDs stay sane
   -e MAX_JOBS=32 \
-# b12x PCIe one-shot all-reduce replaces NCCL-SHM for decode-size collectives
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
   vllm:0.30.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
-# 4-way TP across the four GPUs
       --tensor-parallel-size 4 \
       --enable-expert-parallel \
       --trust-remote-code \
-# auto-fit; holds the full 1M (8.50 GiB KV / 1,064,126 tokens) with the
-# indexer-workspace right-size (vllm #55222)
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-# leaves ~24 GiB/GPU free — this rig shares two cards with an image-generation workload
       --gpu-memory-utilization 0.69 \
-# NVFP4 MoE; pinned — `auto` resolves here today but is free to drift
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
-# native CPU KV offload: 100 GiB pool mmap'd in /dev/shm
       --kv-offloading-size 100 \
       --kv-offloading-backend native \
       --enable-chunked-prefill \
-# MTP speculative decoding, 3 draft tokens (~1.8 accepted tokens/step)
       --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
       --enable-auto-tool-choice \
       --limit-mm-per-prompt '{"image": 20, "video": 0}' \
-# force thinking mode on every turn
       --default-chat-template-kwargs '{"thinking": true}'
 ```
 
