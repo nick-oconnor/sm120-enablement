@@ -118,7 +118,7 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:87feab60251be80597bf7d901e964ce954b219167898b306cf81ce2894c339e2`).
+Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130](https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130) (amd64, `sha256:3399d4fc8fc5ae9fcbd393b09f00adbb57fd67939246108fe7f98b139ded826a`).
 
 ## vLLM Execution
 

@@ -3,16 +3,19 @@
 ## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-09-27)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
-`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:87feab60` — the
-2026-09-27 rebase build (`0.30` rebased onto upstream main `924707f1bf`,
-~202 commits: FlashInfer **0.7.0** (#58069), the GLM-5.3-Flash
-corruption-hunt fixes #58454 (kpool pool selection with spec decode) and
-#58368 (prompt-tail prefix-cache hits with MTP), the profiling-allocator
-fix #58430, the GLM5.3 metadata-op optimization #58450). The branch
-carries #55222 (both halves, one squashed commit), #55601, #57635
-(per-rank FlashInfer autotune cache), two ocnr autotune/scheduler fixes
-and the SM120 NoPE sparse-MLA port — full list in
-`vllm/SM120-GLM53-FLASH.md`. Checkpoint stayed on
+`registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:3399d4fc` — the
+2026-10-01 CI rebuild of the `0.30` branch (`0.30` rebased onto upstream
+main `924707f1bf`, ~202 commits: FlashInfer **0.7.0** (#58069), the
+GLM-5.3-Flash corruption-hunt fixes #58454 (kpool pool selection with spec
+decode) and #58368 (prompt-tail prefix-cache hits with MTP), the
+profiling-allocator fix #58430, the GLM5.3 metadata-op optimization
+#58450). The branch carries #55222 (both halves, one squashed commit),
+#55601, #57635 (per-rank FlashInfer autotune cache), two ocnr
+autotune/scheduler fixes and the SM120 NoPE sparse-MLA port — full list in
+`vllm/SM120-GLM53-FLASH.md`. The rebuild re-pins the 09-27 tree
+(`87feab60`) after a one-day rebase onto upstream `2eaa3bc5ac` (built as
+`7a7d3d10`) was reverted as broken — same tree; the digest moved only via
+the commit-timestamp build stamp. Pushed to Docker Hub 2026-10-01. Checkpoint stayed on
 `nvidia/GLM-5.3-Flash-NVFP4` (ModelOpt recipe
 `nvfp4_experts_dense_mlp-kv_fp8_cast`: experts + dense MLP W4A4, attention /
 router / norms / lm_head / MTP head at source precision, fp8-cast KV recipe)
@@ -114,6 +117,13 @@ Same boot shape as 09-26 (attention `FLASHINFER_MLA_SPARSE_SM120` +
 corruption fixes #58454/#58368 and profiling fix #58430 to the base. Second
 boot with the persistent cache root completes autotune cleanly (the #57635
 per-rank cache).
+
+### Boot (2026-10-01, 3399d4fc — rebuild of the 09-27 tree)
+
+Same boot shape as 09-27: backend `FLASHINFER_MLA_SPARSE_SM120` +
+`fp8_ds_mla`, auto-fit full 1M, clean startup (no ERROR/assert lines),
+serving 200 OKs. No new bench run — the image content is identical to the
+`87feab60` build.
 
 ### Checkpoint prerequisite (host-side, not in git)
 

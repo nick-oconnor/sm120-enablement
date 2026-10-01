@@ -9,13 +9,13 @@ Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)** for
   commits on top are the SM120 NoPE sparse-MLA port (fp8 + FlashInfer
   zero-pad, backend priority, indexer buffer pin), the b12x PCIe one-shot
   all-reduce backend (`VLLM_ENABLE_PCIE_ALLREDUCE`), the SM120 image build,
-  three patches still open
-  upstream — #55222 (both halves in one commit: right-sizes the indexer
-  prefill workspace, without which #55221 cuts the auto-fit `max_model_len`
-  to 516K, losing the 1M context, and sizes the prefill chunk budget in
-  compressed rows), #55601 (seeds the hybrid mamba state index — the
-  prefix-cache KV-corruption fix) and #57635 (per-rank FlashInfer autotune
-  cache files) — and two fixes (the SM120 sparse-MLA warmup no longer
+  three carried patches — #55222 (both halves in one commit: right-sizes the
+  indexer prefill workspace, without which #55221 cuts the auto-fit
+  `max_model_len` to 516K, losing the 1M context, and sizes the prefill chunk
+  budget in compressed rows; merged upstream after this branch's base),
+  #55601 (seeds the hybrid mamba state index — the prefix-cache
+  KV-corruption fix) and #57635 (per-rank FlashInfer autotune cache files;
+  these two still open upstream) — and two fixes (the SM120 sparse-MLA warmup no longer
   tunes leader-only, which deadlocked synchronized autotune; the mamba
   aligned-split uses the scheduler-resolved block size). Upstream's #57477
   (kpool tail-seed stride fix for the silent KV-cache poisoning) is in the
