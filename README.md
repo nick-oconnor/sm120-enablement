@@ -126,22 +126,30 @@ Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130][hub] (amd64,
 
 ## vLLM Execution
 
-| Flag | Notes |
-| --- | --- |
-| `--shm-size` | NCCL bootstrap, engine IPC, 100 GiB KV-offload mmap |
-| `HF_HUB_OFFLINE` | weights come from the local `/models` mount, not the Hub |
-| `NCCL_P2P_LEVEL` | NCCL can't auto-detect P2P inside the container |
-| `RAYON_NUM_THREADS` | cap the Rayon thread pool (tokenizers/parquet) |
-| `OMP_NUM_THREADS` | cap the OpenMP thread pool |
-| `MAX_JOBS` | cap JIT parallelism so container PIDs stay sane |
-| `VLLM_ENABLE_PCIE_ALLREDUCE` | enables the b12x one-shot all-reduce backend |
-| `--tensor-parallel-size` | 4-way TP across the four GPUs |
-| `--max-model-len` | auto-fit; holds the full 1M via the #55222 right-size |
-| `--gpu-memory-utilization` | leaves ~24 GiB/GPU free for the image workload |
-| `--moe-backend` | NVFP4 MoE; pinned, `auto` may drift |
-| `--kv-offloading-*` | native CPU KV offload: 100 GiB pool in `/dev/shm` |
-| `--speculative-config` | MTP speculative decoding, 3 draft tokens |
-| `--default-chat-template-kwargs` | force thinking mode on every turn |
+- `--shm-size 120g` — NCCL bootstrap + engine IPC + the 100 GiB native
+  KV-offload mmap
+- `HF_HUB_OFFLINE=1` — weights come from the local `/models` mount, not the
+  Hub
+- `NCCL_P2P_LEVEL=NODE` — NCCL can't auto-detect P2P from inside the
+  container; declare it manually
+- `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4` — cap the Rayon thread pool
+  (used by tokenizers/parquet)
+- `MAX_JOBS=32` — cap JIT parallelism so container PIDs stay sane
+- `VLLM_ENABLE_PCIE_ALLREDUCE=1` — b12x PCIe one-shot all-reduce replaces
+  NCCL-SHM for decode-size collectives
+- `--tensor-parallel-size 4` — 4-way TP across the four GPUs
+- `--max-model-len auto` — auto-fit; holds the full 1M (8.50 GiB KV /
+  1,064,126 tokens) with the indexer-workspace right-size (vllm #55222)
+- `--gpu-memory-utilization 0.69` — leaves ~24 GiB/GPU free; this rig shares
+  two cards with an image-generation workload
+- `--moe-backend flashinfer_cutlass` — NVFP4 MoE; pinned, `auto` resolves
+  here today but is free to drift
+- `--kv-offloading-size 100 --kv-offloading-backend native` — native CPU KV
+  offload: 100 GiB pool mmap'd in `/dev/shm`
+- `--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'` —
+  MTP speculative decoding, 3 draft tokens
+- `--default-chat-template-kwargs '{"thinking": true}'` — force thinking mode
+  on every turn
 
 ```bash
 docker run --rm --gpus all --shm-size 120g \
