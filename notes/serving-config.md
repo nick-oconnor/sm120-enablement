@@ -1,8 +1,131 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-09-27)
+## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-10-06)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
+`registry.ocnr.org/infra/vllm:0.31.0-sm120-cu130@sha256:9cb8a5c6` — the
+`0.31` branch cut on the upstream **`v0.31.0` release tag** (`db9527a468`,
+2026-10-02), not upstream main (the release branch carries its own
+cherry-picks, so fix presence must be checked by PR number, not commit
+SHA). Built by GitLab CI pipeline #56509 on the default branch (now `0.31`);
+pushed to Docker Hub 2026-10-06 (Hub digest matches the deploy). Carries the
+same set as `0.30` — #55222 (both halves, one squashed commit), #55601,
+#57635, the SM120 NoPE sparse-MLA port, the b12x PCIe oneshot allreduce, the
+scheduler aligned-split fix, the all-ranks warmup fix and the SM120 image
+build — plus **#56531** (new on 0.31: routes every speculation-capable row
+through the speculative path so the KDA recurrent state stays consistent;
+merged upstream after the tag fork). #57477 is in the tag and stays
+uncarried. Full fix list in `vllm/SM120-GLM53-FLASH.md`. The 0.30→0.31
+rebase was low-risk: only `mamba_hybrid.py` and `scheduler.py` saw upstream
+movement under a carry. Known gap: #59504 (exempt async-KV-load blocks from
+zeroing) is on main but not in the tag and is *not* carried — the
+`_set_kv_fetch_stage` state machine it needs isn't in the tag; touches the
+offload load path we use. #55222/#56531 merged upstream after the tag fork,
+so those carries stay until the next rebase.
+
+Flag deltas vs the 0.30 deploy: `--gpu-memory-utilization` 0.69 → 0.655
+(0.31's CUDA-graph memory profiling no longer over-reserves ~4 GiB, so the
+same ~24-25 GiB/GPU comfyui headroom holds at a lower gmu). MTP stays
+k=3. A k=5 apply was briefly live (06:38-07:28 UTC, superseded by the k=3
+commit before the bench boot); its one useful data point: natural traffic
+averaged 3.59-3.76 accepted tokens/step at k=5, vs ~1.8-2.4 at k=3.
+Everything else carries over unchanged, checkpoint still
+`nvidia/GLM-5.3-Flash-NVFP4`, served model name `GLM-5.3-Flash`.
+
+```
+vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
+  --served-model-name GLM-5.3-Flash \
+  --trust-remote-code \
+  --tensor-parallel-size 4 \
+  --enable-expert-parallel \
+  --max-model-len auto \
+  --max-num-seqs 4 \
+  --max-num-batched-tokens 8192 \
+  --gpu-memory-utilization 0.655 \
+  --moe-backend flashinfer_cutlass \
+  --kv-cache-dtype fp8 \
+  --enable-prefix-caching \
+  --kv-offloading-size 100 \
+  --kv-offloading-backend native \
+  --enable-chunked-prefill \
+  --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
+  --tool-call-parser glm47 \
+  --reasoning-parser glm45 \
+  --enable-auto-tool-choice \
+  --limit-mm-per-prompt '{"image": 20, "video": 0}' \
+  --default-chat-template-kwargs '{"thinking": true}'
+```
+
+Env unchanged (`HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`,
+`RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
+`VLLM_ENABLE_PCIE_ALLREDUCE=1`); dshm stays 120Gi for the 100 GiB offload
+mmap.
+
+### Boot (2026-10-06, 9cb8a5c6, NVFP4+MTP3)
+
+The k=5 apply first booted 06:38 (KV 8.59 GiB / 1,061,738 tokens, 1.01x)
+and was superseded at 07:28 by the k=3 commit — the roll went through one
+36s intermediate pod that was SIGTERM'd mid-boot (its EngineDeadError line
+is shutdown noise; it never served) before the final pod started 07:28:43.
+Boot on the deployed k=3 config: backend `FLASHINFER_MLA_SPARSE_SM120` +
+`fp8_ds_mla` (unchanged), MoE `FLASHINFER_CUTLASS` NVFP4 via the
+`--moe-backend` pin, weights 49.17 GiB/GPU in ~93-98s, init engine 126.8s,
+"Application startup complete" 07:33:16 — clean startup, 0 ERROR lines / 0
+tracebacks in the boot window. Profiled at gmu 0.655: available KV 8.7 GiB
+→ 1,088,564 tokens (1.04x over 1,048,576 at MTP k=3); auto-fit holds the
+full 1M — more KV than 0.30's 8.50 GiB despite the lower gmu, because the
+CUDA-graph estimate no longer over-reserves (0.95 estimated / 0.18 actual
+per the branch guide's A/B at gmu 0.66, vs 4.19 / 0.07 on 0.30). Info line
+under spec decode: fused multi-step draft decode is not supported by the
+SM120 attention backends, so the draft loop rebuilds attention metadata
+between steps (same shape as 0.30). KV offload active
+(`CPUOffloadingSpec`; no drafter group annotated, all groups treated
+non-draft). First-hit Triton JIT compiles at the first top-p sampling
+request (07:42:50): the three `_topp_sb_*` kernels — jit_monitor warn,
+one-off latency spikes (warmup gap, not the c128a hang family).
+
+### Benchmarks (2026-10-06, 9cb8a5c6 build, NVFP4+MTP3, offload on, b12x oneshot — c=1, 16 prompts per cell, zero failures)
+
+`vllm bench serve` (same protocol) against the 0.31 deployment — job
+`vllm-bench-manual-spawn-muwdirxq-dpkmf-672tx`, 07:45-08:14 UTC, on the
+07:28 fresh boot. Run integrity: single bench client (`10.67.3.193`),
+`Running: 1` throughout, no interleaved production traffic, and comfyui
+pods were up but idle (per-GPU 10-min power 202-232W, balanced across all
+four cards). A same-seed 2K/8K probe spawned from the `vllm-bench`
+CronJob template ran 07:43-07:44 just before; its 8K leg hit a transient
+tokenizer-load error (`Unrecognized model … no model_type key` at
+07:44:29, gone by the manual run 60s later — if it recurs, check the
+checkpoint's edited `config.json` on the models PVC) and died without
+sending traffic. Its 2K blocks did **not** warm the bench: despite the
+same seed-0 prompts having been served 73s earlier, cfg1's median TTFT
+(189.55ms) is full cold prefill — the cross-run prefix hits that occurred
+on 0.30 no longer happen on this build (0.31 tags prefix-cache extra keys
+by source, upstream #51899). Every TTFT below is cold prefill and
+reproduces the 09-27 cold curve (189/702/2468/9302ms) almost exactly.
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len |
+|---|---|---|---|---|---|---|
+| 2048 | 256 | 135.54 | 189.55ms | 16.53ms | 6.66 | 2.49 |
+| 8192 | 1024 | 122.28 | 701.91ms | 16.63ms | 7.61 | 2.20 |
+| 32768 | 4096 | 131.27 | 2474.09ms | 16.67ms | 7.06 | 2.38 |
+| 131072 | 8192 | 128.65 | 9402.16ms | 16.82ms | 6.95 | 2.54 |
+
+- Decode holds 122-136 tok/s at every length (09-27 k=3: 127-131) — mixed
+  ±5% cell deltas (2K +4.7%, 8K −4.0%, 32K/128K flat), no regression at
+  128K. Acceptance 2.20-2.54 tokens/step (09-27 k=3 random: 2.31-2.53) at
+  the same step cadence (ITL 16.5-16.8ms) — the random-dataset profile is
+  unchanged. For the k=5 data point see the flag-deltas note above.
+- Cold prefill rates (input/TTFT): ~10.8K tok/s at 2K, 11.7K at 8K, 13.2K
+  at 32K, 13.9K at 128K — the chunked-prefill amortization curve,
+  unchanged from 09-27.
+- Offload behaved as designed on the 128K cell: external (CPU) prefix
+  hits climbed 0→14.4% as the 1.06M-token GPU pool turned over.
+- PSU over the bench window: 236W idle floor, 1.22kW avg, **1.79kW peak**
+  (09-27: 1.15kW avg / 1.68kW peak; peak lands on a 128K cold prefill).
+
+## GLM-5.3-Flash NVFP4 + MTP3 on 0.30 — historical (2026-09-26 → 2026-10-06, superseded by the 0.31 cutover)
+
+Deployed 2026-09-26 → 2026-10-06 via k8s-gitops `stage3/apps/vllm.yaml`; image
 `registry.ocnr.org/infra/vllm:0.30.0-sm120-cu130@sha256:3399d4fc` — the
 2026-10-01 CI rebuild of the `0.30` branch (`0.30` rebased onto upstream
 main `924707f1bf`, ~202 commits: FlashInfer **0.7.0** (#58069), the

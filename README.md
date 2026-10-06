@@ -9,20 +9,20 @@ A workstation serving [GLM-5.3-Flash](https://huggingface.co/nvidia/GLM-5.3-Flas
 ## Benchmarks
 
 GLM-5.3-Flash (NVFP4 checkpoint, MTP3 speculative decoding) on vLLM
-`0.30.0-sm120-cu130` with native KV offload and the b12x PCIe one-shot
-all-reduce. 16 prompts, concurrency 1, random dataset, zero
-failed requests. Decode is the MTP output rate (~2.4 accepted tokens/step);
-all TTFTs are cold prefill (fresh boot, empty cache).
+`0.31.0-sm120-cu130` with native KV offload and the b12x PCIe one-shot
+all-reduce. 16 prompts, concurrency 1, random dataset, zero failed
+requests. Decode is the MTP output rate (~2.4 accepted tokens/step); all
+TTFTs are cold prefill (fresh boot).
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 129.43         | 189ms     | 16.47ms  |
-| 8192      | 1024       | 127.36         | 702ms     | 16.54ms  |
-| 32768     | 4096       | 130.75         | 2468ms    | 16.62ms  |
-| 131072    | 8192       | 128.92         | 9302ms    | 16.79ms  |
+| 2048      | 256        | 135.54         | 190ms     | 16.53ms  |
+| 8192      | 1024       | 122.28         | 702ms     | 16.63ms  |
+| 32768     | 4096       | 131.27         | 2474ms    | 16.67ms  |
+| 131072    | 8192       | 128.65         | 9402ms    | 16.82ms  |
 
-PSU output (self-reported via the PSU's USB interface): 262W idle, 1.15kW
-under bench load, 1.68kW peak.
+PSU output (self-reported via the PSU's USB interface): 236W idle, 1.22kW
+under bench load, 1.79kW peak.
 
 ## Hardware
 
@@ -78,8 +78,8 @@ show accuracy parity).
 ## vLLM Build
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
-branch `0.30`, tagged `0.30.0-sm120-cu130` (upstream `main` base
-`924707f1bf`; GLM-5.3-Flash model support is native upstream since
+branch `0.31`, tagged `0.31.0-sm120-cu130` (upstream `v0.31.0` release tag
+`db9527a468`; GLM-5.3-Flash model support is native upstream since
 vllm-project #53906). The branch carries, vs upstream:
 
 - the SM120 NoPE sparse-MLA port (hardware-verified serving path)
@@ -90,6 +90,9 @@ vllm-project #53906). The branch carries, vs upstream:
   `max_model_len` at 516K and loses the 1M context
 - #55601 — seeds the hybrid mamba state index by `mamba_block_size`
   (the prefix-cache KV-corruption fix)
+- #56531 — routes every speculation-capable row through the speculative
+  path so the recurrent state stays consistent; without it, zero-draft
+  decode rows under MTP drift the KDA recurrent state
 - #57635 — per-rank FlashInfer autotune cache files
 - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
   asymmetric tuner state that deadlocked the synchronized autotune
@@ -114,15 +117,15 @@ Build constraints:
   fails to boot.
 
 ```bash
-git clone --branch 0.30 https://github.com/nick-oconnor/vllm.git
+git clone --branch 0.31 https://github.com/nick-oconnor/vllm.git
 cd vllm
-docker build -f docker/Dockerfile -t vllm:0.30.0-sm120-cu130 .
+docker build -f docker/Dockerfile -t vllm:0.31.0-sm120-cu130 .
 ```
 
-Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130][hub] (amd64,
-`sha256:3399d4fc8fc5ae9fcbd393b09f00adbb57fd67939246108fe7f98b139ded826a`).
+Pre-built amd64 image: [ngpitt/vllm:0.31.0-sm120-cu130][hub] (amd64,
+`sha256:9cb8a5c68fe8cf026fd7038084681abbb260f0b5805674a75ede6e3d9a439466`).
 
-[hub]: https://hub.docker.com/r/ngpitt/vllm/tags?name=0.30.0-sm120-cu130
+[hub]: https://hub.docker.com/r/ngpitt/vllm/tags?name=0.31.0-sm120-cu130
 
 ## vLLM Execution
 
@@ -138,9 +141,9 @@ Pre-built amd64 image: [ngpitt/vllm:0.30.0-sm120-cu130][hub] (amd64,
 - `VLLM_ENABLE_PCIE_ALLREDUCE=1` — b12x PCIe one-shot all-reduce replaces
   NCCL-SHM for decode-size collectives
 - `--tensor-parallel-size 4` — 4-way TP across the four GPUs
-- `--max-model-len auto` — auto-fit; holds the full 1M (8.50 GiB KV /
-  1,064,126 tokens) with the indexer-workspace right-size (vllm #55222)
-- `--gpu-memory-utilization 0.69` — leaves ~24 GiB/GPU free; this rig shares
+- `--max-model-len auto` — auto-fit; holds the full 1M (8.59 GiB KV /
+  1,061,738 tokens) with the indexer-workspace right-size (vllm #55222)
+- `--gpu-memory-utilization 0.655` — leaves ~24 GiB/GPU free; this rig shares
   two cards with an image-generation workload
 - `--moe-backend flashinfer_cutlass` — NVFP4 MoE; pinned, `auto` resolves
   here today but is free to drift
@@ -162,7 +165,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
-  vllm:0.30.0-sm120-cu130 \
+  vllm:0.31.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \
@@ -171,7 +174,7 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.69 \
+      --gpu-memory-utilization 0.655 \
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \

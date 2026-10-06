@@ -9,11 +9,11 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 
 ## Image Contents
 
-- **vLLM** built from the `0.30` branch of
+- **vLLM** built from the `0.31` branch of
   [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm), tagged
-  `0.30.0-sm120-cu130` (upstream `main` base `924707f1bf`). GLM-5.3-Flash model
-  support is native upstream since vllm-project #53906 — no fork overlay is
-  needed. The image carries, vs upstream:
+  `0.31.0-sm120-cu130` (upstream `v0.31.0` release tag `db9527a468`).
+  GLM-5.3-Flash model support is native upstream since vllm-project #53906
+  — no fork overlay is needed. The image carries, vs upstream:
 
    - the SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
      priority, indexer buffer pin)
@@ -25,6 +25,9 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
      this branch's base)
    - #55601 — seeds the hybrid mamba state index by `mamba_block_size`
      (the prefix-cache KV-corruption fix; open upstream)
+   - #56531 — routes every speculation-capable row through the speculative
+     path so the recurrent state stays consistent (merged upstream after
+     this branch's base)
    - #57635 — per-rank FlashInfer autotune cache files (open upstream)
    - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
      asymmetric tuner state that deadlocked the synchronized autotune
@@ -41,10 +44,10 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
   TileLang builds from sdist; kernels the FlashInfer / CUTLASS wheels don't
   cover JIT at server startup, so `cuda-nvrtc-dev` ships in the runtime layer,
   not just the build layer
-- **FlashInfer 0.7.0** via the `flashinfer-python` + `flashinfer-cubin` wheels
-  from the flashinfer.ai index (upstream's own pin); autotune tactic sync
-  across TP ranks is upstream-native, with per-rank cache persistence carried
-  on top
+- **FlashInfer 0.7.0.post1** via the `flashinfer-python` +
+  `flashinfer-cubin` wheels from the flashinfer.ai index (upstream's own
+  pin); autotune tactic sync across TP ranks is upstream-native, with
+  per-rank cache persistence carried on top
 - **CUTLASS** via the `nvidia-cutlass-dsl==4.7.1` PyPI wheel (SM120 GEMM
   kernels; upstream's requirement since the DSL 4.7 bump)
 - **b12x** via the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot all-reduce
@@ -69,9 +72,9 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 - `VLLM_ENABLE_PCIE_ALLREDUCE=1` — b12x PCIe one-shot all-reduce replaces
   NCCL-SHM for decode-size collectives
 - `--tensor-parallel-size 4` — 4-way TP across the four GPUs
-- `--max-model-len auto` — auto-fit; holds the full 1M (8.50 GiB KV /
-  1,064,126 tokens) with the indexer-workspace right-size (vllm #55222)
-- `--gpu-memory-utilization 0.69` — leaves ~24 GiB/GPU free; this rig shares
+- `--max-model-len auto` — auto-fit; holds the full 1M (8.59 GiB KV /
+  1,061,738 tokens) with the indexer-workspace right-size (vllm #55222)
+- `--gpu-memory-utilization 0.655` — leaves ~24 GiB/GPU free; this rig shares
   two cards with an image-generation workload
 - `--moe-backend flashinfer_cutlass` — NVFP4 MoE; pinned, `auto` resolves
   here today but is free to drift
@@ -93,7 +96,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
-  ngpitt/vllm:0.30.0-sm120-cu130 \
+  ngpitt/vllm:0.31.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \
@@ -102,7 +105,7 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.69 \
+      --gpu-memory-utilization 0.655 \
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
