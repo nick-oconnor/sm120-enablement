@@ -1,6 +1,177 @@
 # Serving config & fixes — SM120 single-outlet inference
 
-## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-10-06)
+## GLM-5.3-Flash NVFP4 + MTP3 — current (2026-10-19)
+
+Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
+`registry.ocnr.org/infra/vllm:0.32.0-sm120-cu130@sha256:3c20fd27` — the
+`0.32` branch cut on the upstream **`v0.32.0` release tag** (`5df63a7203`,
+2026-10-17), not upstream main (the release branch carries its own
+cherry-picks, so fix presence must be checked by PR number, not commit SHA).
+Pushed to Docker Hub 2026-10-19 as `ngpitt/vllm:0.32.0-sm120-cu130`; the Hub
+digest matches the deploy (`sha256:3c20fd27`).
+
+The overlay shrank from ten commits to six. **Four carries landed upstream
+and were dropped**: #55222 (indexer prefill workspace, upstream
+`c37f86e572`), #55601 (mamba state-index seed, `3d6853b32c`), #56531
+(speculation-capable rows, `0eac152707`) and #57635 (per-rank autotune
+cache, `3403e0f176` — a superset of ours: it keeps the per-rank path but
+replaces the "every rank has a file" check with a fingerprint comparison and
+rescopes the gather/barrier to the tuning group for PP). **#59504** (exempt
+async-KV-load blocks from zeroing) is in the tag as `ca0df1f122`, closing
+the known gap the 0.31 base left open. #57477 remains in the tag, uncarried.
+
+What still carries: the SM120 NoPE sparse-MLA port, the b12x PCIe oneshot
+allreduce, the scheduler aligned-split fix, the all-ranks warmup fix, the
+SM120 image build and the branch guide. Upstream now ships its own
+`flashinfer_mla_sparse_sm120.py` (for rope-carrying DSv3.2/GLM_NSA), so the
+NoPE port shrank from a vendored file to a ~150-line delta on top of it; it
+takes upstream's `flat_kv_row_view`/`BLOCK_STRIDE_ROWS` flat-row addressing
+and `MultipleOf(64)` page sizing, which are load-bearing — reverting to
+0.31's direct addressing raises `SM120 sparse-MLA has no decode kernel ...
+page_block_size=2304 ... instantiated only for page_block_size=64`.
+
+### `cudagraph_mode: FULL` is mandatory on 0.32
+
+Without `--compilation-config '{"cudagraph_mode": "FULL"}'` the build emits
+token salad (`locklocklock...`) on a trivial prompt. Eager is clean, so it is
+a CUDA-graph issue, and the 0.31 image is correct on the same host, model and
+mount with an identical kernel stack (flashinfer 0.7.0.post1, torch
+2.13.0+cu130, triton 3.7.1, tilelang 0.1.12) and an identical compilation
+config — it is a vLLM Python-side 0.32 regression.
+
+Bisected to the PIECEWISE capture path. `CompilationMode` is `NONE` for this
+model, so `splitting_ops` is empty and "piecewise" does not split around
+attention — it captures the whole model for mixed prefill+decode batches,
+including the sparse-MLA prefill path, which is not graph-safe. `FULL`
+captures only uniform decode batches and falls back to eager for mixed ones.
+
+| cudagraph_mode | result |
+|---|---|
+| none / eager | correct |
+| `PIECEWISE` | garbage |
+| `FULL_AND_PIECEWISE` (upstream default) | garbage |
+| `FULL` | correct |
+
+Ruled out by experiment, so do not re-test: the 256-token block page
+(`--block-size 64` still garbage); the flat-row addressing (required, see
+above); `index_group.convert_logical_to_physical_topk` persistent buffers;
+the `logical_topk_ready` event wait; b12x allreduce; MTP; torch.compile; the
+ocnr valid-counts/empty-row zeroing; the scheduler aligned-split carry;
+`cudagraph_decoder_replay`; the indexer TP row-sharding gate
+(`tp_prefill_row_sharding_supported`, whose `mixed_mode() != FULL` condition
+looks like an exact fit but is a coincidence); and swapping 0.31's KDA
+kernels / `fused_recurrent` / `mla_attention` into the 0.32 image.
+
+`FULL` is a workaround, not a root-cause fix — upstream should populate
+`splitting_ops` or refuse piecewise capture for this backend. It costs no
+measurable throughput (decode medians 157.7 vs 156.0 tok/s on 0.31, n=18
+each; 0.32 is also faster on cold prefill).
+
+### Flag deltas vs the 0.31 deploy
+
+`--compilation-config '{"cudagraph_mode": "FULL"}'` added (above), and
+`--gpu-memory-utilization` 0.655 → **0.644**. The piecewise capture was
+charging a ~6.1 GiB "peak activation" reservation that cut auto-fit to
+732,672 tokens; with `FULL` the full 1M fits on far less, so the same 1M
+context now needs ~1.05 GiB/GPU less and that headroom returns to comfyui.
+
+| gmu | KV | tokens | full 1M? |
+|---|---|---|---|
+| 0.642 | 8.56 GiB | 1,045,923 | no (-4,864) |
+| 0.643 | 8.65 GiB | 1,057,406 | yes, 0.8% margin (floor) |
+| **0.644** | **8.75 GiB** | **1,068,443** | **yes, 1.02x (deployed)** |
+| 0.655 | 9.79 GiB | 1,196,480 | yes, 14% spare (old) |
+
+KV scales ~11,600 tokens per 0.001 gmu and the accounting is deterministic
+(two independent boots at 0.655 both gave exactly 1,196,480). MTP stays k=3,
+checkpoint still `nvidia/GLM-5.3-Flash-NVFP4`.
+
+```
+vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
+  --served-model-name GLM-5.3-Flash \
+  --trust-remote-code \
+  --tensor-parallel-size 4 \
+  --enable-expert-parallel \
+  --max-model-len auto \
+  --max-num-seqs 4 \
+  --max-num-batched-tokens 8192 \
+  --gpu-memory-utilization 0.644 \
+  --compilation-config '{"cudagraph_mode": "FULL"}' \
+  --moe-backend flashinfer_cutlass \
+  --kv-cache-dtype fp8 \
+  --enable-prefix-caching \
+  --enable-prompt-tokens-details \
+  --kv-offloading-size 100 \
+  --kv-offloading-backend native \
+  --enable-chunked-prefill \
+  --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
+  --tool-call-parser glm47 \
+  --reasoning-parser glm45 \
+  --enable-auto-tool-choice \
+  --limit-mm-per-prompt '{"image": 999, "video": 0}' \
+  --default-chat-template-kwargs '{"thinking": true}'
+```
+
+Env unchanged (`HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`,
+`RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
+`VLLM_ENABLE_PCIE_ALLREDUCE=1`).
+
+### Benchmarks (2026-10-19, 3c20fd27 build, NVFP4+MTP3, gmu 0.644, offload on, b12x oneshot — c=1, 16 prompts per cell, zero failures)
+
+`vllm bench serve` (same protocol as the 0.31 table) on a fresh boot, so
+every TTFT is cold prefill. Tokenizer must be passed explicitly
+(`--tokenizer /models/nvidia/GLM-5.3-Flash-NVFP4 --trust-remote-code`) — the
+served name alone sends the bench client to the Hub and it fails offline.
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len |
+|---|---|---|---|---|---|---|
+| 2048 | 256 | 124.70 | 186.95ms | 16.44ms | 6.83 | 2.43 |
+| 8192 | 1024 | 124.33 | 708.62ms | 16.51ms | 7.32 | 2.25 |
+| 32768 | 4096 | 131.87 | 2447.39ms | 16.58ms | 6.85 | 2.37 |
+| 131072 | 8192 | 123.73 | 9363.46ms | 16.73ms | 6.98 | 2.41 |
+
+Deltas vs the 0.31 table: 2K **-8.0%**, 8K +1.7%, 32K +0.5%, 128K -3.8%.
+No systematic regression — ITL is marginally *better* in every cell
+(16.44-16.73 vs 16.53-16.82), TTFT is within ~1% at every length
+(186.95/708.62/2447/9363 vs 189.55/701.91/2474/9402), and acceptance is
+comparable (2.25-2.43 vs 2.20-2.54). The 2K cell is the one real outlier:
+its step cadence and acceptance are unchanged, so the ~8% is per-request
+overhead amortised over only 256 output tokens (~160 ms/request), which the
+short cell exposes and the long cells absorb. Decode throughput measured
+head-to-head on this box has ±15% run-to-run spread, so treat a single
+cell's delta with suspicion.
+
+Cold prefill rates (input/TTFT): ~11.0K tok/s at 2K, 11.6K at 8K, 13.4K at
+32K, 14.0K at 128K — unchanged from 0.31's curve.
+
+### Build note
+
+CI passes no `--target`, so buildkit builds the Dockerfile's last stage,
+`vllm-openai-nonroot`: user `vllm` (UID 2000, GID 0, `HOME=/home/vllm`),
+entrypoint `vllm-nonroot-entrypoint.sh`. Every cache dir (HF, Triton,
+Inductor, vLLM, Numba, Outlines) defaults to `$HOME/.cache/...`, so the cache
+PVC mounted at `/home/vllm` is correct. Building `--target vllm-openai`
+yields the root variant (`HOME=/root`) whose caches land outside the mount —
+a local-testing trap that makes restart/cache tests silently run cold twice.
+
+### Boot-verify (2026-10-19, 3c20fd27, NVFP4+MTP3, gmu 0.644)
+
+- auto-fit full 1,048,576 (8.73 GiB KV, 1,068,443 tokens, 1.02x)
+- needle found at **1,045,745 prompt tokens** — 2,831 short of the ceiling —
+  cold (135.1 s) and on the prefix-cache hit (2.9 s)
+- eviction: five 502,902-token sessions revisited after the pool turned
+  over, 10/10 correct, 0 preemptions
+- accumulated decode, 10 rounds: worst *consecutive* 6-gram repeat 1, i.e.
+  no genuine looping. Note `soak.py` scores `max(consecutive, total)` and so
+  reports `looping=FAIL` on benign prompt-echo — the flagged n-grams were
+  fragments of the probe's own prompt. Judge on consecutive repeats.
+- greedy temp-0 (primes, spelling, 7919x311, capitals, reversal) all correct
+- vision (split-colour image) and `glm47` tool calls correct
+- prefix-cache cached/fresh/cached: ok/ok/ok
+- restart reloads the per-rank autotune cache (`0 new, N from previous`) with
+  no deadlock; init 274 s cold → 115 s warm
+
+## GLM-5.3-Flash NVFP4 + MTP3 on 0.31 — historical (2026-10-06 → 2026-10-19, superseded by the 0.32 cutover)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
 `registry.ocnr.org/infra/vllm:0.31.0-sm120-cu130@sha256:9cb8a5c6` — the

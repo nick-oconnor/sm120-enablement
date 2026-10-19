@@ -9,9 +9,9 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 
 ## Image Contents
 
-- **vLLM** built from the `0.31` branch of
+- **vLLM** built from the `0.32` branch of
   [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm), tagged
-  `0.31.0-sm120-cu130` (upstream `v0.31.0` release tag `db9527a468`).
+  `0.32.0-sm120-cu130` (upstream `v0.32.0` release tag `5df63a7203`).
   GLM-5.3-Flash model support is native upstream since vllm-project #53906
   — no fork overlay is needed. The image carries, vs upstream:
 
@@ -19,24 +19,18 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
      priority, indexer buffer pin)
    - the b12x PCIe one-shot all-reduce backend (`VLLM_ENABLE_PCIE_ALLREDUCE`)
    - the SM120 image build (Blackwell consumer)
-   - #55222 — right-sizes the indexer prefill workspace and sizes the prefill
-     chunk budget in compressed rows; without it, #55221 caps auto-fit
-     `max_model_len` at 516K and loses the 1M context (merged upstream after
-     this branch's base)
-   - #55601 — seeds the hybrid mamba state index by `mamba_block_size`
-     (the prefix-cache KV-corruption fix; open upstream)
-   - #56531 — routes every speculation-capable row through the speculative
-     path so the recurrent state stays consistent (merged upstream after
-     this branch's base)
-   - #57635 — per-rank FlashInfer autotune cache files (open upstream)
    - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
      asymmetric tuner state that deadlocked the synchronized autotune
    - mamba aligned-split uses the scheduler-resolved block size;
      `cache_config.block_size` gets reassigned to the smallest
      prefix-cacheable group
 
-  Upstream's #57477 (kpool tail-seed stride fix for the silent KV-cache
-  poisoning) is in the base. KV offloading is upstream native
+  On 0.32 the overlay shrank: #55222, #55601, #56531 and #57635 all landed
+  upstream and are no longer carried (#57635 upstream is a superset that also
+  fingerprints the per-rank cache files), and #59504 (async KV-load zeroing)
+  is in the base. Upstream also ships its own `flashinfer_mla_sparse_sm120.py`
+  now, so the NoPE port is a delta on top of it. Upstream's #57477 (kpool
+  tail-seed stride fix for the silent KV-cache poisoning) is in the base. KV offloading is upstream native
   (`CPUOffloadingSpec`, scoped to prefix-cacheable groups), enabled in the
   quick start below.
 
@@ -72,10 +66,17 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 - `VLLM_ENABLE_PCIE_ALLREDUCE=1` — b12x PCIe one-shot all-reduce replaces
   NCCL-SHM for decode-size collectives
 - `--tensor-parallel-size 4` — 4-way TP across the four GPUs
-- `--max-model-len auto` — auto-fit; holds the full 1M (8.59 GiB KV /
-  1,061,738 tokens) with the indexer-workspace right-size (vllm #55222)
-- `--gpu-memory-utilization 0.655` — leaves ~24 GiB/GPU free; this rig shares
-  two cards with an image-generation workload
+- `--max-model-len auto` — auto-fit; holds the full 1M (8.75 GiB KV /
+  1,068,443 tokens, 1.02x)
+- `--gpu-memory-utilization 0.644` — leaves ~25 GiB/GPU free; this rig shares
+  two cards with an image-generation workload. Measured floor for the full 1M
+  is 0.643; 0.642 lands 4,864 tokens short
+- `--compilation-config '{"cudagraph_mode": "FULL"}'` — **required.** Under
+  the upstream default `FULL_AND_PIECEWISE` the model emits token salad:
+  `splitting_ops` is empty for this model, so "piecewise" captures the whole
+  model for mixed prefill+decode batches, including the sparse-MLA prefill
+  path, which is not CUDA-graph safe. `FULL` captures only uniform decode
+  batches, at no measurable throughput cost
 - `--moe-backend flashinfer_cutlass` — NVFP4 MoE; pinned, `auto` resolves
   here today but is free to drift
 - `--kv-offloading-size 100 --kv-offloading-backend native` — native CPU KV
@@ -96,7 +97,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
-  ngpitt/vllm:0.31.0-sm120-cu130 \
+  ngpitt/vllm:0.32.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \
@@ -105,10 +106,12 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.655 \
+      --gpu-memory-utilization 0.644 \
+      --compilation-config '{"cudagraph_mode": "FULL"}' \
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
+      --enable-prompt-tokens-details \
       --kv-offloading-size 100 \
       --kv-offloading-backend native \
       --enable-chunked-prefill \
@@ -116,6 +119,6 @@ docker run --rm --gpus all --shm-size 120g \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
       --enable-auto-tool-choice \
-      --limit-mm-per-prompt '{"image": 20, "video": 0}' \
+      --limit-mm-per-prompt '{"image": 999, "video": 0}' \
       --default-chat-template-kwargs '{"thinking": true}'
 ```
