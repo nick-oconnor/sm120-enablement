@@ -12,8 +12,8 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 - **vLLM** built from the `0.32` branch of
   [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm), tagged
   `0.32.0-sm120-cu130` (upstream `v0.32.0` release tag `5df63a7203`).
-  GLM-5.3-Flash model support is native upstream since vllm-project #53906
-  — no fork overlay is needed. The image carries, vs upstream:
+  GLM-5.3-Flash model support is native upstream since vllm-project #53906;
+  no fork overlay is needed. The image carries, vs upstream:
 
    - the SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
      priority, indexer buffer pin)
@@ -34,7 +34,7 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
   (`CPUOffloadingSpec`, scoped to prefix-cacheable groups), enabled in the
   quick start below.
 
-- **CUDA 13.0** runtime + toolchain — DeepGEMM is compiled in-image and
+- **CUDA 13.0** runtime + toolchain: DeepGEMM is compiled in-image and
   TileLang builds from sdist; kernels the FlashInfer / CUTLASS wheels don't
   cover JIT at server startup, so `cuda-nvrtc-dev` ships in the runtime layer,
   not just the build layer
@@ -44,46 +44,46 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
   per-rank cache persistence carried on top
 - **CUTLASS** via the `nvidia-cutlass-dsl==4.7.1` PyPI wheel (SM120 GEMM
   kernels; upstream's requirement since the DSL 4.7 bump)
-- **b12x** via the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot all-reduce
+- **b12x** via the `b12x==1.3.0` PyPI wheel: CuTe DSL PCIe one-shot all-reduce
   (`b12x.comm.pcie`); enabled per-deployment with `VLLM_ENABLE_PCIE_ALLREDUCE=1`
   (replaces NCCL-SHM for decode-size collectives at TP>2 on PCIe-only boxes)
 - **py-spy + `dump-jam-state.sh`** pre-installed for incident diagnostics
   (dumps py-spy traces, `nvidia-smi`, and dmesg Xid lines)
-- `TORCH_CUDA_ARCH_LIST="12.0"` — only SM120 gets built, so the image is
+- `TORCH_CUDA_ARCH_LIST="12.0"`: only SM120 gets built, so the image is
   smaller than the upstream `vllm/vllm` images that target every arch
 
 ## Quick Start
 
-- `--shm-size 120g` — NCCL bootstrap + engine IPC + the 100 GiB native
+- `--shm-size 120g`: NCCL bootstrap + engine IPC + the 100 GiB native
   KV-offload mmap
-- `HF_HUB_OFFLINE=1` — weights come from the local `/models` mount, not the
+- `HF_HUB_OFFLINE=1`: weights come from the local `/models` mount, not the
   Hub
-- `NCCL_P2P_LEVEL=NODE` — NCCL can't auto-detect P2P from inside the
+- `NCCL_P2P_LEVEL=NODE`: NCCL can't auto-detect P2P from inside the
   container; declare it manually
-- `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4` — cap the Rayon thread pool
+- `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`: cap the Rayon thread pool
   (used by tokenizers/parquet)
-- `MAX_JOBS=32` — cap JIT parallelism so container PIDs stay sane
-- `VLLM_ENABLE_PCIE_ALLREDUCE=1` — b12x PCIe one-shot all-reduce replaces
+- `MAX_JOBS=32`: cap JIT parallelism so container PIDs stay sane
+- `VLLM_ENABLE_PCIE_ALLREDUCE=1`: b12x PCIe one-shot all-reduce replaces
   NCCL-SHM for decode-size collectives
-- `--tensor-parallel-size 4` — 4-way TP across the four GPUs
-- `--max-model-len auto` — auto-fit; holds the full 1M (8.75 GiB KV /
+- `--tensor-parallel-size 4`: 4-way TP across the four GPUs
+- `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
   1,068,443 tokens, 1.02x)
-- `--gpu-memory-utilization 0.644` — leaves ~25 GiB/GPU free; this rig shares
+- `--gpu-memory-utilization 0.644`: leaves ~25 GiB/GPU free; this rig shares
   two cards with an image-generation workload. Measured floor for the full 1M
   is 0.643; 0.642 lands 4,864 tokens short
-- `--compilation-config '{"cudagraph_mode": "FULL"}'` — **required.** Under
+- `--compilation-config '{"cudagraph_mode": "FULL"}'`: **required.** Under
   the upstream default `FULL_AND_PIECEWISE` the model emits token salad:
   `splitting_ops` is empty for this model, so "piecewise" captures the whole
   model for mixed prefill+decode batches, including the sparse-MLA prefill
   path, which is not CUDA-graph safe. `FULL` captures only uniform decode
   batches, at no measurable throughput cost
-- `--moe-backend flashinfer_cutlass` — NVFP4 MoE; pinned, `auto` resolves
+- `--moe-backend flashinfer_cutlass`: NVFP4 MoE; pinned, `auto` resolves
   here today but is free to drift
-- `--kv-offloading-size 100 --kv-offloading-backend native` — native CPU KV
+- `--kv-offloading-size 100 --kv-offloading-backend native`: native CPU KV
   offload: 100 GiB pool mmap'd in `/dev/shm`
-- `--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'` —
+- `--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'`:
   MTP speculative decoding, 3 draft tokens
-- `--default-chat-template-kwargs '{"thinking": true}'` — force thinking mode
+- `--default-chat-template-kwargs '{"thinking": true}'`: force thinking mode
   on every turn
 
 ```bash

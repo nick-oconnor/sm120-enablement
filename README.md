@@ -63,16 +63,16 @@ PCIe Speed (between GPU pairs):
 
 ## Model
 
-[GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash) — sparse-MLA
+[GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash): sparse-MLA
 MoE, 320B total / 18B active parameters, 45 layers, 1M-token context,
 text + image + video input, text output. Approaches Claude Opus 4.8 on
 coding and agentic benchmarks.
 
 Served checkpoint:
 [nvidia/GLM-5.3-Flash-NVFP4](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4),
-NVIDIA's NVFP4 quantization of GLM-5.3-Flash — MoE experts and dense MLP run
+NVIDIA's NVFP4 quantization of GLM-5.3-Flash: MoE experts and dense MLP run
 4-bit weights and activations, attention / router / lm_head / MTP head stay
-at source precision (~3.3× smaller than the 16-bit model; NVIDIA's evals
+at source precision (~3.3x smaller than the 16-bit model; NVIDIA's evals
 show accuracy parity).
 
 ## vLLM Build
@@ -91,7 +91,7 @@ vllm-project #53906). The branch carries, vs upstream:
   `cache_config.block_size` gets reassigned to the smallest
   prefix-cacheable group
 
-0.32 retires four carries that landed upstream — #55222 (indexer prefill
+0.32 retires four carries that landed upstream: #55222 (indexer prefill
 workspace), #55601 (mamba state-index seed), #56531 (speculation-capable
 rows) and #57635 (per-rank autotune cache, upstream's version a superset
 that also fingerprints the cache files). #59504 (async KV-load zeroing) is
@@ -106,7 +106,7 @@ Build constraints:
   JIT) need the matching CUDA toolchain; CUTLASS comes from the
   `nvidia-cutlass-dsl==4.7.1` PyPI wheel (upstream's requirement since the
   DSL 4.7 bump).
-- **b12x** comes from the `b12x==1.3.0` PyPI wheel — CuTe DSL PCIe one-shot
+- **b12x** comes from the `b12x==1.3.0` PyPI wheel: CuTe DSL PCIe one-shot
   all-reduce kernels (`b12x.comm.pcie`); no native extension build.
 - FlashInfer and TileLang JIT kernels at server startup (the boot log shows
   TileLang compiling `mhc_pre_big_fuse_*` on each worker). The `cuda-nvrtc-dev`
@@ -119,7 +119,7 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.32.0-sm120-cu130 .
 ```
 
-Build the default (last) Dockerfile stage — `vllm-openai-nonroot`, user
+Build the default (last) Dockerfile stage: `vllm-openai-nonroot`, user
 `vllm` (UID 2000, GID 0, `HOME=/home/vllm`). Passing `--target vllm-openai`
 gives the root variant, whose caches land outside the mounted `/home/vllm`.
 
@@ -130,24 +130,24 @@ Pre-built amd64 image: [ngpitt/vllm:0.32.0-sm120-cu130][hub] (amd64,
 
 ## vLLM Execution
 
-- `--shm-size 120g` — NCCL bootstrap + engine IPC + the 100 GiB native
+- `--shm-size 120g`: NCCL bootstrap + engine IPC + the 100 GiB native
   KV-offload mmap
-- `HF_HUB_OFFLINE=1` — weights come from the local `/models` mount, not the
+- `HF_HUB_OFFLINE=1`: weights come from the local `/models` mount, not the
   Hub
-- `NCCL_P2P_LEVEL=NODE` — NCCL can't auto-detect P2P from inside the
+- `NCCL_P2P_LEVEL=NODE`: NCCL can't auto-detect P2P from inside the
   container; declare it manually
-- `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4` — cap the Rayon thread pool
+- `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`: cap the Rayon thread pool
   (used by tokenizers/parquet)
-- `MAX_JOBS=32` — cap JIT parallelism so container PIDs stay sane
-- `VLLM_ENABLE_PCIE_ALLREDUCE=1` — b12x PCIe one-shot all-reduce replaces
+- `MAX_JOBS=32`: cap JIT parallelism so container PIDs stay sane
+- `VLLM_ENABLE_PCIE_ALLREDUCE=1`: b12x PCIe one-shot all-reduce replaces
   NCCL-SHM for decode-size collectives
-- `--tensor-parallel-size 4` — 4-way TP across the four GPUs
-- `--max-model-len auto` — auto-fit; holds the full 1M (8.75 GiB KV /
+- `--tensor-parallel-size 4`: 4-way TP across the four GPUs
+- `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
   1,068,443 tokens, 1.02x)
-- `--gpu-memory-utilization 0.644` — leaves ~25 GiB/GPU free; this rig shares
+- `--gpu-memory-utilization 0.644`: leaves ~25 GiB/GPU free; this rig shares
   two cards with an image-generation workload. Measured floor for the full 1M
   is 0.643 (1,057,406 tokens); 0.642 lands 4,864 tokens short
-- `--compilation-config '{"cudagraph_mode": "FULL"}'` — **required on 0.32.**
+- `--compilation-config '{"cudagraph_mode": "FULL"}'`: **required on 0.32.**
   Under the upstream default `FULL_AND_PIECEWISE` the model emits token
   salad: with torch.compile off `splitting_ops` is empty, so "piecewise"
   captures the whole model for mixed prefill+decode batches, including the
@@ -155,13 +155,13 @@ Pre-built amd64 image: [ngpitt/vllm:0.32.0-sm120-cu130][hub] (amd64,
   uniform decode batches and falls back to eager for mixed ones, at no
   measurable throughput cost. It also frees the ~6.1 GiB "peak activation"
   the piecewise capture reserved, which is what lets gmu drop to 0.644
-- `--moe-backend flashinfer_cutlass` — NVFP4 MoE; pinned, `auto` resolves
+- `--moe-backend flashinfer_cutlass`: NVFP4 MoE; pinned, `auto` resolves
   here today but is free to drift
-- `--kv-offloading-size 100 --kv-offloading-backend native` — native CPU KV
+- `--kv-offloading-size 100 --kv-offloading-backend native`: native CPU KV
   offload: 100 GiB pool mmap'd in `/dev/shm`
-- `--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'` —
+- `--speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'`:
   MTP speculative decoding, 3 draft tokens
-- `--default-chat-template-kwargs '{"thinking": true}'` — force thinking mode
+- `--default-chat-template-kwargs '{"thinking": true}'`: force thinking mode
   on every turn
 
 ```bash
@@ -203,5 +203,5 @@ docker run --rm --gpus all --shm-size 120g \
 
 ---
 
-Operational deep-dive — build/deploy config, the full launch-blocker list, and
-production-incident post-mortems — lives in [`notes/`](notes/).
+Operational deep-dive (build/deploy config, the full launch-blocker list, and
+production-incident post-mortems) lives in [`notes/`](notes/).
