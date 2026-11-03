@@ -9,17 +9,17 @@ A workstation serving [GLM-5.3-Flash](https://huggingface.co/nvidia/GLM-5.3-Flas
 ## Benchmarks
 
 GLM-5.3-Flash (NVFP4 checkpoint, MTP3 speculative decoding) on vLLM
-`0.32.0-sm120-cu130` with native KV offload and the b12x PCIe one-shot
+`0.33.0-sm120-cu130` with native KV offload and the b12x PCIe one-shot
 all-reduce. 16 prompts, concurrency 1, random dataset, zero failed
 requests. Decode is the MTP output rate (~2.3-2.4 accepted tokens/step);
 all TTFTs are cold prefill (fresh boot).
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 124.70         | 187ms     | 16.44ms  |
-| 8192      | 1024       | 124.33         | 709ms     | 16.51ms  |
-| 32768     | 4096       | 131.87         | 2447ms    | 16.58ms  |
-| 131072    | 8192       | 123.73         | 9363ms    | 16.73ms  |
+| 2048      | 256        | 127.53         | 191ms     | 16.61ms  |
+| 8192      | 1024       | 123.61         | 697ms     | 16.69ms  |
+| 32768     | 4096       | 131.18         | 2405ms    | 16.83ms  |
+| 131072    | 8192       | 128.66         | 9203ms    | 16.98ms  |
 
 PSU output (self-reported via the PSU's USB interface): 236W idle, 1.22kW
 under bench load, 1.79kW peak.
@@ -78,8 +78,8 @@ show accuracy parity).
 ## vLLM Build
 
 Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
-branch `0.32`, tagged `0.32.0-sm120-cu130` (upstream `v0.32.0` release tag
-`5df63a7203`; GLM-5.3-Flash model support is native upstream since
+branch `0.33`, tagged `0.33.0-sm120-cu130` (upstream `v0.33.0` release tag
+`3a4d82f569`; GLM-5.3-Flash model support is native upstream since
 vllm-project #53906). The branch carries, vs upstream:
 
 - the SM120 NoPE sparse-MLA port (hardware-verified serving path)
@@ -91,11 +91,11 @@ vllm-project #53906). The branch carries, vs upstream:
   `cache_config.block_size` gets reassigned to the smallest
   prefix-cacheable group
 
-0.32 retires four carries that landed upstream: #55222 (indexer prefill
-workspace), #55601 (mamba state-index seed), #56531 (speculation-capable
-rows) and #57635 (per-rank autotune cache, upstream's version a superset
-that also fingerprints the cache files). #59504 (async KV-load zeroing) is
-in the tag too, closing the gap the 0.31 base left open.
+Four carries retired upstream at the 0.32 cut and remain there on 0.33:
+#55222 (indexer prefill workspace), #55601 (mamba state-index seed), #56531
+(speculation-capable rows) and #57635 (per-rank autotune cache, upstream's
+version a superset that also fingerprints the cache files), along with
+#57477 and #59504 (async KV-load zeroing).
 
 Full fix list: [`notes/serving-config.md`](notes/serving-config.md).
 
@@ -114,17 +114,17 @@ Build constraints:
   fails to boot.
 
 ```bash
-git clone --branch 0.32 https://github.com/nick-oconnor/vllm.git
+git clone --branch 0.33 https://github.com/nick-oconnor/vllm.git
 cd vllm
-docker build -f docker/Dockerfile -t vllm:0.32.0-sm120-cu130 .
+docker build -f docker/Dockerfile -t vllm:0.33.0-sm120-cu130 .
 ```
 
 Build the default (last) Dockerfile stage: `vllm-openai-nonroot`, user
 `vllm` (UID 2000, GID 0, `HOME=/home/vllm`). Passing `--target vllm-openai`
 gives the root variant, whose caches land outside the mounted `/home/vllm`.
 
-Pre-built amd64 image: [ngpitt/vllm:0.32.0-sm120-cu130][hub] (amd64,
-`sha256:3c20fd27b7c56f2daeb57b6903e652acac27a3c348f9fee1e3d48a7d0a23438c`).
+Latest pre-built amd64 image: [ngpitt/vllm:0.32.0-sm120-cu130][hub]. 0.33 is
+not mirrored to Docker Hub yet - build from source for now.
 
 [hub]: https://hub.docker.com/r/ngpitt/vllm/tags?name=0.32.0-sm120-cu130
 
@@ -146,7 +146,7 @@ Pre-built amd64 image: [ngpitt/vllm:0.32.0-sm120-cu130][hub] (amd64,
   1,068,443 tokens, 1.02x)
 - `--gpu-memory-utilization 0.644`: leaves ~25 GiB/GPU free; this rig shares
   two cards with an image-generation workload. Measured floor for the full 1M
-  is 0.643 (1,057,406 tokens); 0.642 lands 4,864 tokens short
+  is 0.642 (1,050,783 tokens, 0.2% margin); 0.641 lands 11,776 tokens short
 - `--compilation-config '{"cudagraph_mode": "FULL"}'`: **required on 0.32.**
   Under the upstream default `FULL_AND_PIECEWISE` the model emits token
   salad: with torch.compile off `splitting_ops` is empty, so "piecewise"
@@ -175,7 +175,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
-  vllm:0.32.0-sm120-cu130 \
+  vllm:0.33.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \

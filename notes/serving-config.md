@@ -1,6 +1,99 @@
 # Serving config & fixes: SM120 single-outlet inference
 
-## GLM-5.3-Flash NVFP4 + MTP3: current (2026-10-19)
+## GLM-5.3-Flash NVFP4 + MTP3: current (2026-11-02)
+
+Deployed via k8s-gitops `stage3/inference/vllm.yaml`; image
+`registry.ocnr.org/infra/vllm:0.33.0-sm120-cu130@sha256:3d8e9cd0`, the `0.33`
+branch cut on the upstream **`v0.33.0` release tag** (`3a4d82f569`,
+2026-10-31), not
+upstream main (the release branch carries its own cherry-picks, so fix
+presence must be checked by PR number, not commit SHA).
+
+**All six carries still required.** The four fixes that retired upstream at
+the 0.32 cut (#55222, #55601, #56531, #57635) are all still in `v0.33.0`, as
+are #57477 and #59504, and all five ocnr-only code carries remain absent
+upstream. 943 upstream commits moved under the branch. FlashInfer moved
+0.7.0.post1 -> 0.7.2.post1.
+
+### The rebase hazard git cannot catch
+
+Upstream added `skip_scale: bool = False` to
+`AttentionImpl.do_kv_cache_update` and threads it into
+`concat_and_cache_mla`. The NoPE carry **overrides** that method, so it
+rebased with no conflict while silently keeping the 7-argument signature;
+the engine then died at startup with `takes 7 positional arguments but 8
+were given`. Only the base class moved, so there was nothing for git to
+flag. After any rebase, diff the signatures of every base method this
+backend overrides - an AST comparison against the new tag takes seconds.
+
+Two ordinary conflicts alongside it: upstream factored the topk buffer width
+into `get_sparse_topk_buffer_width()`, so the SM120 case now lives inside
+that helper (`round_up(topk, 128)`) instead of two inline copies, dropping
+`mtp.py` from the carry; and upstream's Dockerfile now computes a multi-arch
+DeepEP list, where we keep the `12.0a` pin plus the NCCL `LIBRARY_PATH` fix.
+
+### `cudagraph_mode: FULL` is now a memory fix, not a correctness one
+
+The 0.32 token-salad bug under the upstream default `FULL_AND_PIECEWISE` is
+**fixed in 0.33**: the default mode now produces correct output on every
+greedy probe. The flag stays anyway, because the piecewise capture still
+charges a large "peak activation" reservation:
+
+| cudagraph_mode | auto-fit @ gmu 0.644 | KV |
+|---|---|---|
+| `FULL_AND_PIECEWISE` (default) | 605,952 tokens | 5.11 GiB |
+| **`FULL`** | **full 1,048,576** (1.02x) | **8.79 GiB** |
+
+That is worse than 0.32, where the default only fell to 732,672. The 0.32
+bisect and its ruled-out list are kept in `vllm/SM120-GLM53-FLASH.md`.
+
+### Flag deltas vs the 0.32 deploy
+
+None. gmu stays **0.644**, `cudagraph_mode: FULL` stays, MTP stays k=3,
+checkpoint still `nvidia/GLM-5.3-Flash-NVFP4`. Only the image digest moves.
+
+The gmu floor shifted 0.643 -> **0.642** (1,050,783 tokens) but that leaves
+only 2,207 tokens of headroom; 0.644 gives 1,072,858 (2.3% margin) for about
+0.2 GiB/GPU more, so the deploy stays at 0.644. 0.641 lands 11,776 short.
+
+### Boot-verify (2026-11-02, NVFP4+MTP3, gmu 0.644)
+
+- auto-fit full 1,048,576 (8.79 GiB KV, 1,072,858 tokens, 1.02x)
+- needle found at **1,035,329 prompt tokens** cold (132.4 s) and warm
+- eviction: five 517,689-token sessions revisited after turnover, **10/10**,
+  0 preemptions, 13.1M external (CPU offload) prefix-cache hit tokens
+- accumulated decode, 10 rounds: worst *consecutive* 6-gram repeat 1
+- greedy temp-0, vision, and `glm47` tool calls all correct
+- prefix-cache cached/fresh/cached: ok / ok / ok
+- restart reloads the per-rank autotune cache (`Loaded 126 configs` per rank,
+  `Config cache hit (source=config file)`) with no deadlock; init 267.7 s
+  cold -> **53.1 s** warm
+
+**Harness notes.** The eviction probe needs `max_tokens >= 256`: answers land
+at 55-63 tokens, so a 64-token cap intermittently returns
+`finish_reason=length` with empty content and scores a false `BAD` - that
+produced a spurious `eviction=FAIL` on the first 0.33 run. The looping check
+must score *consecutive* n-gram repeats; counting total occurrences
+false-positives on benign prompt echo.
+
+### Benchmarks (2026-11-02, NVFP4+MTP3, gmu 0.644, offload on, b12x oneshot - c=1, 16 prompts per cell, zero failures)
+
+Fresh boot, so every TTFT is cold prefill. Pass the tokenizer explicitly
+(`--tokenizer /models/nvidia/GLM-5.3-Flash-NVFP4 --trust-remote-code`) or the
+bench client goes to the Hub and fails offline.
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len | vs 0.32 |
+|---|---|---|---|---|---|---|---|
+| 2048 | 256 | 127.53 | 190.75ms | 16.61ms | 6.75 | 2.46 | +2.3% |
+| 8192 | 1024 | 123.61 | 697.01ms | 16.69ms | 7.49 | 2.26 | -0.6% |
+| 32768 | 4096 | 131.18 | 2405.30ms | 16.83ms | 7.04 | 2.39 | -0.5% |
+| 131072 | 8192 | 128.66 | 9203.34ms | 16.98ms | 6.58 | 2.55 | +4.0% |
+
+All four cells within noise of 0.32 and TTFT comparable or better at every
+length. Decode on this box has about +/-15% run-to-run spread; do not read a
+single cell's delta as a trend.
+
+## GLM-5.3-Flash NVFP4 + MTP3 on 0.32: historical (2026-10-19 -> 2026-11-02, superseded by the 0.33 cutover)
 
 Deployed via k8s-gitops `stage3/apps/vllm.yaml`; image
 `registry.ocnr.org/infra/vllm:0.32.0-sm120-cu130@sha256:3c20fd27`, the
