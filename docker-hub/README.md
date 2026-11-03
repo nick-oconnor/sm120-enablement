@@ -9,9 +9,9 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 
 ## Image Contents
 
-- **vLLM** built from the `0.32` branch of
+- **vLLM** built from the `0.33` branch of
   [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm), tagged
-  `0.32.0-sm120-cu130` (upstream `v0.32.0` release tag `5df63a7203`).
+  `0.33.0-sm120-cu130` (upstream `v0.33.0` release tag `3a4d82f569`).
   GLM-5.3-Flash model support is native upstream since vllm-project #53906;
   no fork overlay is needed. The image carries, vs upstream:
 
@@ -25,10 +25,10 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
      `cache_config.block_size` gets reassigned to the smallest
      prefix-cacheable group
 
-  On 0.32 the overlay shrank: #55222, #55601, #56531 and #57635 all landed
-  upstream and are no longer carried (#57635 upstream is a superset that also
-  fingerprints the per-rank cache files), and #59504 (async KV-load zeroing)
-  is in the base. Upstream also ships its own `flashinfer_mla_sparse_sm120.py`
+  Those four carries (#55222, #55601, #56531, #57635 - the last a superset
+  upstream that also fingerprints the per-rank cache files) retired at the
+  0.32 cut and remain upstream on 0.33, as does #59504 (async KV-load
+  zeroing). Upstream also ships its own `flashinfer_mla_sparse_sm120.py`
   now, so the NoPE port is a delta on top of it. Upstream's #57477 (kpool
   tail-seed stride fix for the silent KV-cache poisoning) is in the base. KV offloading is upstream native
   (`CPUOffloadingSpec`, scoped to prefix-cacheable groups), enabled in the
@@ -97,7 +97,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
-  ngpitt/vllm:0.32.0-sm120-cu130 \
+  ngpitt/vllm:0.33.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \

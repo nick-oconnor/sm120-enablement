@@ -123,10 +123,10 @@ Build the default (last) Dockerfile stage: `vllm-openai-nonroot`, user
 `vllm` (UID 2000, GID 0, `HOME=/home/vllm`). Passing `--target vllm-openai`
 gives the root variant, whose caches land outside the mounted `/home/vllm`.
 
-Latest pre-built amd64 image: [ngpitt/vllm:0.32.0-sm120-cu130][hub]. 0.33 is
-not mirrored to Docker Hub yet - build from source for now.
+Pre-built amd64 image: [ngpitt/vllm:0.33.0-sm120-cu130][hub] (amd64,
+`sha256:3d8e9cd0035eaabfdd5bdac0b1872a45ee0287ce59cd70057daff8af0e7b1899`).
 
-[hub]: https://hub.docker.com/r/ngpitt/vllm/tags?name=0.32.0-sm120-cu130
+[hub]: https://hub.docker.com/r/ngpitt/vllm/tags?name=0.33.0-sm120-cu130
 
 ## vLLM Execution
 

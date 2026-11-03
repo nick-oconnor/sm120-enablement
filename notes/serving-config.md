@@ -13,7 +13,9 @@ presence must be checked by PR number, not commit SHA).
 the 0.32 cut (#55222, #55601, #56531, #57635) are all still in `v0.33.0`, as
 are #57477 and #59504, and all five ocnr-only code carries remain absent
 upstream. 943 upstream commits moved under the branch. FlashInfer moved
-0.7.0.post1 -> 0.7.2.post1.
+0.7.0.post1 -> 0.7.2.post1. Pushed to Docker Hub 2026-11-03 as
+`ngpitt/vllm:0.33.0-sm120-cu130`; the Hub digest matches the deploy
+(`sha256:3d8e9cd0`).
 
 ### The rebase hazard git cannot catch
 
