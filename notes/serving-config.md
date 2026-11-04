@@ -1,6 +1,6 @@
 # Serving config & fixes: SM120 single-outlet inference
 
-## GLM-5.3-Flash NVFP4 + MTP3: current (2026-11-02)
+## GLM-5.3-Flash NVFP4 + MTP3: current (2026-11-04)
 
 Deployed via k8s-gitops `stage3/inference/vllm.yaml`; image
 **`vllm/vllm-openai:v0.33.0@sha256:d825baf9`** - the *stock upstream image*,
@@ -10,13 +10,18 @@ upstream **`v0.33.0` release tag** (`3a4d82f569`, 2026-10-31), not
 upstream main (the release branch carries its own cherry-picks, so fix
 presence must be checked by PR number, not commit SHA).
 
-**All six carries still required.** The four fixes that retired upstream at
-the 0.32 cut (#55222, #55601, #56531, #57635) are all still in `v0.33.0`, as
-are #57477 and #59504, and all five ocnr-only code carries remain absent
-upstream. 943 upstream commits moved under the branch. FlashInfer moved
-0.7.0.post1 -> 0.7.2.post1. Pushed to Docker Hub 2026-11-03 as
-`ngpitt/vllm:0.33.0-sm120-cu130`; the Hub digest matches the deploy
-(`sha256:3d8e9cd0`).
+**Every ocnr code carry is now redundant** - see "Fork retired from
+production" below. The audit at the 0.33 cut initially concluded all five
+ocnr-only carries were still required; that was wrong, and the method that
+produced it is corrected below. The four fixes that retired upstream at the
+0.32 cut (#55222, #55601, #56531, #57635) are still in `v0.33.0`, as are
+#57477 and #59504. 943 upstream commits moved under the branch; FlashInfer
+moved 0.7.0.post1 -> 0.7.2.post1.
+
+The fork image for this cut is still published as
+`ngpitt/vllm:0.33.0-sm120-cu130` (Docker Hub, 2026-11-03,
+`sha256:3d8e9cd0`) and remains a valid drop-in if the ops tooling or
+single-arch build is wanted; it is simply no longer what this rig runs.
 
 ### Fork retired from production (2026-11-04)
 
@@ -45,7 +50,7 @@ Verified on `vllm/vllm-openai:v0.33.0` with the exact production args:
 | greedy / vision / glm47 tools | all correct |
 | prefix-cache cached/fresh/cached | ok / ok / ok |
 | MTP acceptance | 3791/6192 = 61.2% (fork image: 60.4%) |
-| decode 200/400/800 | 183 / 204 / 211 tok/s |
+| decode 200/400/800 (local probe) | 183 / 204 / 211 tok/s; see the production benchmark below for the authoritative figures |
 | restart w/ populated cache | per-rank files reloaded, no deadlock |
 
 **Cache PVC moves `/home/vllm` -> `/root`** because the upstream image runs
@@ -159,22 +164,57 @@ produced a spurious `eviction=FAIL` on the first 0.33 run. The looping check
 must score *consecutive* n-gram repeats; counting total occurrences
 false-positives on benign prompt echo.
 
-### Benchmarks (2026-11-02, NVFP4+MTP3, gmu 0.644, offload on, b12x oneshot - c=1, 16 prompts per cell, zero failures)
+### Benchmarks (2026-11-04, stock upstream image, NVFP4+MTP3, gmu 0.644, offload on, FlashInfer PCIe IPC all-reduce; c=1, 16 prompts per cell, zero failures)
 
-Fresh boot, so every TTFT is cold prefill. Pass the tokenizer explicitly
-(`--tokenizer /models/nvidia/GLM-5.3-Flash-NVFP4 --trust-remote-code`) or the
-bench client goes to the Hub and fails offline.
+`vllm bench serve` from the in-cluster `vllm-bench` job against the live
+deployment (`http://vllm.inference.svc.cluster.local`), job
+`vllm-bench-manual-spawn-mw22yxbs-ra0mm-j4krd`, 12:16-12:40 UTC. Tokenizer
+passed explicitly (`--tokenizer /models/nvidia/GLM-5.3-Flash-NVFP4`).
 
-| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len | vs 0.32 |
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len | Accept rate |
 |---|---|---|---|---|---|---|---|
-| 2048 | 256 | 127.53 | 190.75ms | 16.61ms | 6.75 | 2.46 | +2.3% |
-| 8192 | 1024 | 123.61 | 697.01ms | 16.69ms | 7.49 | 2.26 | -0.6% |
-| 32768 | 4096 | 131.18 | 2405.30ms | 16.83ms | 7.04 | 2.39 | -0.5% |
-| 131072 | 8192 | 128.66 | 9203.34ms | 16.98ms | 6.58 | 2.55 | +4.0% |
+| 2048 | 256 | 161.00 | 237.13ms | 12.94ms | 5.35 | 2.46 | 48.79% |
+| 8192 | 1024 | 152.43 | 757.89ms | 13.02ms | 5.76 | 2.24 | 41.33% |
+| 32768 | 4096 | 162.88 | 2491.99ms | 13.07ms | 5.49 | 2.36 | 45.49% |
+| 131072 | 8192 | 145.29 | 9838.38ms | 13.27ms | 5.25 | 2.33 | 44.38% |
 
-All four cells within noise of 0.32 and TTFT comparable or better at every
-length. Decode on this box has about +/-15% run-to-run spread; do not read a
-single cell's delta as a trend.
+Per-position MTP acceptance is consistent across lengths: position 0
+62-74%, position 1 38-46%, position 2 22-28%.
+
+**Decode is up 13-26% and ITL down ~22% versus the 0.33 fork image.** The ITL
+move is the real story: the step cadence drops from 16.6-17.0ms to
+12.9-13.3ms at every length, which is what the FlashInfer PCIe IPC
+all-reduce buys over the b12x oneshot it replaced.
+
+| cell | decode | vs fork | ITL | vs fork | TTFT | vs fork |
+|---|---|---|---|---|---|---|
+| 2K | 161.00 | +26.2% | 12.94 | -22.1% | 237.13 | +24.3% |
+| 8K | 152.43 | +23.3% | 13.02 | -22.0% | 757.89 | +8.7% |
+| 32K | 162.88 | +24.2% | 13.07 | -22.3% | 2491.99 | +3.6% |
+| 128K | 145.29 | +12.9% | 13.27 | -21.8% | 9838.38 | +6.9% |
+
+**TTFT is 4-24% worse**, most at the short cell. Treat that comparison as
+indicative rather than exact: the fork numbers were taken locally over
+`docker exec` to localhost, these go through the k8s Service, and this run
+did not pass `--ignore-eos`. The ITL and decode deltas are large enough to
+survive that caveat; the 2K TTFT delta is not.
+
+Cold prefill rates (input/TTFT): ~8.6K tok/s at 2K, 10.8K at 8K, 13.2K at
+32K, 13.3K at 128K.
+
+**Benign warning to expect.** Every cell logs, twice, before running:
+
+```
+Error parsing config for /models/nvidia/GLM-5.3-Flash-NVFP4: Unrecognized
+model in ... Should have a `model_type` key in its config.json.
+```
+
+HuggingFace `AutoConfig` cannot parse the patched checkpoint (its
+`model_type` sits under the nested text config), the bench client retries
+twice, then falls through to the explicit `--tokenizer` path and runs
+normally. Zero failed requests in all four cells. This is the same signature
+noted on 2026-10-06, where it was suspected to be transient; it is not
+transient, it is structural and harmless.
 
 ## GLM-5.3-Flash NVFP4 + MTP3 on 0.32: historical (2026-10-19 -> 2026-11-02, superseded by the 0.33 cutover)
 

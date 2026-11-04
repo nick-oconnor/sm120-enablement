@@ -9,17 +9,17 @@ A workstation serving [GLM-5.3-Flash](https://huggingface.co/nvidia/GLM-5.3-Flas
 ## Benchmarks
 
 GLM-5.3-Flash (NVFP4 checkpoint, MTP3 speculative decoding) on vLLM
-`vllm/vllm-openai:v0.33.0` with native KV offload and the b12x PCIe one-shot
-all-reduce. 16 prompts, concurrency 1, random dataset, zero failed
-requests. Decode is the MTP output rate (~2.3-2.4 accepted tokens/step);
-all TTFTs are cold prefill (fresh boot).
+`vllm/vllm-openai:v0.33.0` with native KV offload and upstream's FlashInfer
+PCIe IPC all-reduce. 16 prompts, concurrency 1, random dataset, zero failed
+requests. Decode is the MTP output rate (2.24-2.46 accepted tokens/step); all TTFTs
+are cold prefill. Measured in-cluster against the live deployment.
 
 | Input Tokens | Output Tokens | Decode (tok/s) | Median TTFT | Median ITL |
 | --------- | ---------- | -------------- | --------- | -------- |
-| 2048      | 256        | 127.53         | 191ms     | 16.61ms  |
-| 8192      | 1024       | 123.61         | 697ms     | 16.69ms  |
-| 32768     | 4096       | 131.18         | 2405ms    | 16.83ms  |
-| 131072    | 8192       | 128.66         | 9203ms    | 16.98ms  |
+| 2048      | 256        | 161.00         | 237ms     | 12.94ms  |
+| 8192      | 1024       | 152.43         | 758ms     | 13.02ms  |
+| 32768     | 4096       | 162.88         | 2492ms    | 13.07ms  |
+| 131072    | 8192       | 145.29         | 9838ms    | 13.27ms  |
 
 PSU output (self-reported via the PSU's USB interface): 236W idle, 1.22kW
 under bench load, 1.79kW peak.

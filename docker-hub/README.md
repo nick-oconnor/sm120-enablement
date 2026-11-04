@@ -7,6 +7,12 @@ Standalone [vLLM](https://github.com/nick-oconnor/vllm) inference image for the
 Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)**
 for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 
+> **Note:** as of 2026-11-04 the reference rig
+> ([sm120-enablement](https://github.com/nick-oconnor/sm120-enablement))
+> serves the *stock upstream* `vllm/vllm-openai:v0.33.0` instead - every fork
+> carry is redundant on v0.33.0. This image remains a valid drop-in and adds
+> single-arch builds, reproducible digests, py-spy and `dump-jam-state.sh`.
+
 ## Image Contents
 
 - **vLLM** built from the `0.33` branch of
