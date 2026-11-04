@@ -49,6 +49,41 @@ charges a large "peak activation" reservation:
 That is worse than 0.32, where the default only fell to 732,672. The 0.32
 bisect and its ruled-out list are kept in `vllm/SM120-GLM53-FLASH.md`.
 
+### Retired: the b12x PCIe oneshot all-reduce carry
+
+Upstream v0.33.0 ships `flashinfer_pcie_ipc_all_reduce.py`, a native PCIe IPC
+all-reduce supporting world_size 2/4/8 on PCIe-only topologies - exactly the
+gap the ocnr b12x carry filled. It is opt-in behind
+`VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC`, so the carry was still the live
+path by default.
+
+A/B/A on one image and host, only the all-reduce differing (decode medians):
+
+| | b12x (ours, n=24) | FlashInfer PCIe IPC (n=12) | delta |
+|---|---|---|---|
+| decode 200 | 154.1 (115-194) | 185.5 (174-200) | +20.4% |
+| decode 400 | 157.4 (145-186) | 207.3 (193-218) | +31.7% |
+| decode 800 | 165.3 (147-184) | 215.2 (202-226) | +30.2% |
+| **all** | **157.9** | **201.1** | **+27.4%** |
+
+Distributions barely overlap (b12x max 194.1 vs upstream min 173.8) and the
+gap holds across both b12x boots, so it is not boot-to-boot spread. Upstream
+autotunes the kernel (`flashinfer::pcie_ipc_all_reduce`, 7 configs per TP
+group); ours was a fixed oneshot. Long-context validation on the new backend
+is 12/12 (needle at 1,035,329 tokens cold and warm, eviction 10/10) and
+auto-fit is unchanged at the full 1M.
+
+Only the all-reduce code is dropped; the `b12x==1.3.0` wheel stays because
+upstream imports b12x and never installs it.
+
+**How this was missed until now.** The carry audit grepped each new tag for
+ocnr identifiers (`VLLM_ENABLE_PCIE_ALLREDUCE` and friends) and concluded
+the carry was still required. That only proves upstream did not copy our
+patch verbatim; it cannot see upstream solving the same problem under a
+different name. Audit carries by what they *do* - for an all-reduce carry,
+"is there any AR backend supporting TP>2 without NVLink, under any name or
+env flag?" - not by whether our symbols are absent.
+
 ### Flag deltas vs the 0.32 deploy
 
 None. gmu stays **0.644**, `cudagraph_mode: FULL` stays, MTP stays k=3,
@@ -207,9 +242,9 @@ vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
   --default-chat-template-kwargs '{"thinking": true}'
 ```
 
-Env unchanged (`HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`,
-`RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
-`VLLM_ENABLE_PCIE_ALLREDUCE=1`).
+Env (`HF_HUB_OFFLINE=1`, `NCCL_P2P_LEVEL=NODE`, `RAYON_NUM_THREADS=4`,
+`OMP_NUM_THREADS=4`, `MAX_JOBS=32`,
+`VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1`).
 
 ### Benchmarks (2026-10-19, 3c20fd27 build, NVFP4+MTP3, gmu 0.644, offload on, b12x oneshot; c=1, 16 prompts per cell, zero failures)
 

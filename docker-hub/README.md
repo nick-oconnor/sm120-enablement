@@ -17,7 +17,7 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 
    - the SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
      priority, indexer buffer pin)
-   - the b12x PCIe one-shot all-reduce backend (`VLLM_ENABLE_PCIE_ALLREDUCE`)
+   - the b12x wheel install (upstream imports b12x but never installs it)
    - the SM120 image build (Blackwell consumer)
    - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
      asymmetric tuner state that deadlocked the synchronized autotune
@@ -44,9 +44,10 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
   per-rank cache persistence carried on top
 - **CUTLASS** via the `nvidia-cutlass-dsl==4.7.1` PyPI wheel (SM120 GEMM
   kernels; upstream's requirement since the DSL 4.7 bump)
-- **b12x** via the `b12x==1.3.0` PyPI wheel: CuTe DSL PCIe one-shot all-reduce
-  (`b12x.comm.pcie`); enabled per-deployment with `VLLM_ENABLE_PCIE_ALLREDUCE=1`
-  (replaces NCCL-SHM for decode-size collectives at TP>2 on PCIe-only boxes)
+- **b12x** via the `b12x==1.3.0` PyPI wheel: SM12x CuTe DSL kernels. Upstream
+  imports b12x (modelopt_block_quant, kernel_warmup, fused_moe) but never
+  installs it. Installed `--no-deps` so it cannot downgrade cutlass-dsl below
+  the 4.7.1 upstream requires
 - **py-spy + `dump-jam-state.sh`** pre-installed for incident diagnostics
   (dumps py-spy traces, `nvidia-smi`, and dmesg Xid lines)
 - `TORCH_CUDA_ARCH_LIST="12.0"`: only SM120 gets built, so the image is
@@ -63,8 +64,9 @@ for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
 - `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`: cap the Rayon thread pool
   (used by tokenizers/parquet)
 - `MAX_JOBS=32`: cap JIT parallelism so container PIDs stay sane
-- `VLLM_ENABLE_PCIE_ALLREDUCE=1`: b12x PCIe one-shot all-reduce replaces
-  NCCL-SHM for decode-size collectives
+- `VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1`: upstream's PCIe IPC all-reduce
+  for decode-size collectives; the only AR path supporting TP>2 without
+  NVLink, and ~27% faster than the b12x oneshot it replaced on 0.33
 - `--tensor-parallel-size 4`: 4-way TP across the four GPUs
 - `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
   1,068,443 tokens, 1.02x)
@@ -96,7 +98,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e RAYON_NUM_THREADS=4 \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
-  -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
+  -e VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1 \
   ngpitt/vllm:0.33.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \

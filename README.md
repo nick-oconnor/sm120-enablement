@@ -83,7 +83,7 @@ branch `0.33`, tagged `0.33.0-sm120-cu130` (upstream `v0.33.0` release tag
 vllm-project #53906). The branch carries, vs upstream:
 
 - the SM120 NoPE sparse-MLA port (hardware-verified serving path)
-- the b12x PCIe one-shot all-reduce backend (`VLLM_ENABLE_PCIE_ALLREDUCE`)
+- the b12x wheel install (upstream imports b12x but never installs it)
 - the SM120 image build (Blackwell consumer)
 - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
   asymmetric tuner state that deadlocked the synchronized autotune
@@ -139,8 +139,9 @@ Pre-built amd64 image: [ngpitt/vllm:0.33.0-sm120-cu130][hub] (amd64,
 - `RAYON_NUM_THREADS=4`, `OMP_NUM_THREADS=4`: cap the Rayon thread pool
   (used by tokenizers/parquet)
 - `MAX_JOBS=32`: cap JIT parallelism so container PIDs stay sane
-- `VLLM_ENABLE_PCIE_ALLREDUCE=1`: b12x PCIe one-shot all-reduce replaces
-  NCCL-SHM for decode-size collectives
+- `VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1`: upstream's PCIe IPC all-reduce
+  for decode-size collectives; the only AR path supporting TP>2 without
+  NVLink, and ~27% faster than the b12x oneshot it replaced on 0.33
 - `--tensor-parallel-size 4`: 4-way TP across the four GPUs
 - `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
   1,068,443 tokens, 1.02x)
@@ -174,7 +175,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e RAYON_NUM_THREADS=4 \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
-  -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
+  -e VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1 \
   vllm:0.33.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
