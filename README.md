@@ -9,7 +9,7 @@ A workstation serving [GLM-5.3-Flash](https://huggingface.co/nvidia/GLM-5.3-Flas
 ## Benchmarks
 
 GLM-5.3-Flash (NVFP4 checkpoint, MTP3 speculative decoding) on vLLM
-`0.33.0-sm120-cu130` with native KV offload and the b12x PCIe one-shot
+`vllm/vllm-openai:v0.33.0` with native KV offload and the b12x PCIe one-shot
 all-reduce. 16 prompts, concurrency 1, random dataset, zero failed
 requests. Decode is the MTP output rate (~2.3-2.4 accepted tokens/step);
 all TTFTs are cold prefill (fresh boot).
@@ -77,41 +77,35 @@ show accuracy parity).
 
 ## vLLM Build
 
-Fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
-branch `0.33`, tagged `0.33.0-sm120-cu130` (upstream `v0.33.0` release tag
-`3a4d82f569`; GLM-5.3-Flash model support is native upstream since
-vllm-project #53906). The branch carries, vs upstream:
+**As of 2026-11-04 this rig serves the stock upstream image,
+`vllm/vllm-openai:v0.33.0`.** Every ocnr fork carry is redundant on v0.33.0,
+so no custom build is required to serve GLM-5.3-Flash on SM120.
 
-- the SM120 NoPE sparse-MLA port (hardware-verified serving path)
-- the b12x wheel install (upstream imports b12x but never installs it)
-- the SM120 image build (Blackwell consumer)
-- SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
-  asymmetric tuner state that deadlocked the synchronized autotune
-- mamba aligned-split uses the scheduler-resolved block size;
-  `cache_config.block_size` gets reassigned to the smallest
-  prefix-cacheable group
+What changed upstream: FlashInfer now ships a native no-rope MLA kernel for
+exactly this shape (`qk_nope_head_dim=256`, `kv_lora_rank=512`), so the
+576-wide zero-pad the fork carried is unnecessary - and the kpool pool-drop,
+the index-width pin and the backend priority existed only to support that
+pad. Upstream also fixed the leader-only autotune asymmetry (#57635), gained
+a native PCIe IPC all-reduce for TP>2 without NVLink, and its default
+`torch_cuda_arch_list` already includes 12.0.
 
-Four carries retired upstream at the 0.32 cut and remain there on 0.33:
-#55222 (indexer prefill workspace), #55601 (mamba state-index seed), #56531
-(speculation-capable rows) and #57635 (per-rank autotune cache, upstream's
-version a superset that also fingerprints the cache files), along with
-#57477 and #59504 (async KV-load zeroing).
+Verified on the stock image with the production args: selects
+FLASHINFER_MLA_SPARSE_SM120 unaided, full 1M at gmu 0.644, needle found at
+1,035,329 prompt tokens, eviction 10/10, vision and tool calls correct, MTP
+acceptance 61.2%, restart with no autotune deadlock. Full detail in
+[`notes/serving-config.md`](notes/serving-config.md).
 
-Full fix list: [`notes/serving-config.md`](notes/serving-config.md).
+Two things the stock image does not provide: py-spy and `dump-jam-state.sh`
+for incident triage, and a slower warm restart (164 s vs ~46 s, since
+upstream builds eight arches rather than just 12.0).
 
-Build constraints:
-
-- GPUs are SM 12.0 (Blackwell consumer). `TORCH_CUDA_ARCH_LIST="12.0"`.
-- Several SM120 kernel paths (DeepGEMM fp8 MoE, TileLang, FlashInfer runtime
-  JIT) need the matching CUDA toolchain; CUTLASS comes from the
-  `nvidia-cutlass-dsl==4.7.1` PyPI wheel (upstream's requirement since the
-  DSL 4.7 bump).
-- **b12x** comes from the `b12x==1.3.0` PyPI wheel: CuTe DSL PCIe one-shot
-  all-reduce kernels (`b12x.comm.pcie`); no native extension build.
-- FlashInfer and TileLang JIT kernels at server startup (the boot log shows
-  TileLang compiling `mhc_pre_big_fuse_*` on each worker). The `cuda-nvrtc-dev`
-  package must be in the runtime image, not just the build image, or the server
-  fails to boot.
+The fork: [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm),
+branch `0.33` (upstream `v0.33.0` release tag `3a4d82f569`). It is retained
+for single-arch builds, reproducible digests (`SOURCE_DATE_EPOCH`), pinned
+CI, and the ops tooling - not because it is needed to run the model. Build
+the default (last) Dockerfile stage, `vllm-openai-nonroot`; `--target
+vllm-openai` gives the root variant whose caches land outside the mounted
+`/home/vllm`.
 
 ```bash
 git clone --branch 0.33 https://github.com/nick-oconnor/vllm.git
@@ -119,14 +113,17 @@ cd vllm
 docker build -f docker/Dockerfile -t vllm:0.33.0-sm120-cu130 .
 ```
 
-Build the default (last) Dockerfile stage: `vllm-openai-nonroot`, user
-`vllm` (UID 2000, GID 0, `HOME=/home/vllm`). Passing `--target vllm-openai`
-gives the root variant, whose caches land outside the mounted `/home/vllm`.
+Build constraints (either image):
 
-Pre-built amd64 image: [ngpitt/vllm:0.33.0-sm120-cu130][hub] (amd64,
-`sha256:3d8e9cd0035eaabfdd5bdac0b1872a45ee0287ce59cd70057daff8af0e7b1899`).
-
-[hub]: https://hub.docker.com/r/ngpitt/vllm/tags?name=0.33.0-sm120-cu130
+- GPUs are SM 12.0 (Blackwell consumer). Upstream's default arch list
+  already includes 12.0; the fork narrows to it to cut build time.
+- Several SM120 kernel paths (DeepGEMM fp8 MoE, TileLang, FlashInfer runtime
+  JIT) need the matching CUDA toolchain, and `cuda-nvrtc-dev` plus a C++
+  compiler must be in the *runtime* image, not just the build image. Both
+  images satisfy this.
+- **b12x** comes from the `b12x==1.3.0` PyPI wheel; upstream imports b12x
+  (modelopt_block_quant, kernel_warmup, fused_moe) and ships it in the
+  official image.
 
 ## vLLM Execution
 
@@ -168,7 +165,7 @@ Pre-built amd64 image: [ngpitt/vllm:0.33.0-sm120-cu130][hub] (amd64,
 ```bash
 docker run --rm --gpus all --shm-size 120g \
   -v <host-models-path>:/models:ro \
-  -v <host-cache-path>:/home/vllm \
+  -v <host-cache-path>:/root \
   -p 8000:8000 \
   -e HF_HUB_OFFLINE=1 \
   -e NCCL_P2P_LEVEL=NODE \
@@ -176,7 +173,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1 \
-  vllm:0.33.0-sm120-cu130 \
+  vllm/vllm-openai:v0.33.0 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \

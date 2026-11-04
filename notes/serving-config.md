@@ -3,9 +3,10 @@
 ## GLM-5.3-Flash NVFP4 + MTP3: current (2026-11-02)
 
 Deployed via k8s-gitops `stage3/inference/vllm.yaml`; image
-`registry.ocnr.org/infra/vllm:0.33.0-sm120-cu130@sha256:3d8e9cd0`, the `0.33`
-branch cut on the upstream **`v0.33.0` release tag** (`3a4d82f569`,
-2026-10-31), not
+**`vllm/vllm-openai:v0.33.0@sha256:d825baf9`** - the *stock upstream image*,
+as of 2026-11-04. The ocnr fork is no longer deployed; see "Fork retired
+from production" below. Historically this ran the `0.33` branch cut on the
+upstream **`v0.33.0` release tag** (`3a4d82f569`, 2026-10-31), not
 upstream main (the release branch carries its own cherry-picks, so fix
 presence must be checked by PR number, not commit SHA).
 
@@ -16,6 +17,51 @@ upstream. 943 upstream commits moved under the branch. FlashInfer moved
 0.7.0.post1 -> 0.7.2.post1. Pushed to Docker Hub 2026-11-03 as
 `ngpitt/vllm:0.33.0-sm120-cu130`; the Hub digest matches the deploy
 (`sha256:3d8e9cd0`).
+
+### Fork retired from production (2026-11-04)
+
+Every ocnr code carry is redundant on v0.33.0, so the fork image no longer
+changes behaviour for this deployment. Established by reverting all seven
+carried files to their v0.33.0 originals inside our image, then by running
+the stock upstream image directly with the production args.
+
+The keystone was the NoPE sparse-MLA port. FlashInfer now ships a native
+no-rope MLA kernel for exactly this shape (`qk_nope_head_dim=256`,
+`kv_lora_rank=512`, which GLM-5.3-Flash matches), so the 576-wide zero-pad is
+unnecessary - and the kpool pool-drop, the index-width pin and the backend
+priority all existed only to support that pad. Upstream separately fixed the
+leader-only autotune asymmetry (#57635), and its default
+`torch_cuda_arch_list` already includes 12.0, so the SM120 build narrowing is
+a build-time optimisation rather than a capability.
+
+Verified on `vllm/vllm-openai:v0.33.0` with the exact production args:
+
+| check | result |
+|---|---|
+| backend | selects FLASHINFER_MLA_SPARSE_SM120 unaided |
+| auto-fit @ gmu 0.644 | full 1,048,576 (8.69 GiB KV, 1,064,028 tokens, 1.01x) |
+| needle | 1,035,329 prompt tokens, found cold (133 s) and warm |
+| eviction | 10/10 across five 517,689-token sessions |
+| greedy / vision / glm47 tools | all correct |
+| prefix-cache cached/fresh/cached | ok / ok / ok |
+| MTP acceptance | 3791/6192 = 61.2% (fork image: 60.4%) |
+| decode 200/400/800 | 183 / 204 / 211 tok/s |
+| restart w/ populated cache | per-rank files reloaded, no deadlock |
+
+**Cache PVC moves `/home/vllm` -> `/root`** because the upstream image runs
+as root. Mount at `/root`, not `/root/.cache`: that keeps PVC root == `$HOME`
+exactly as before, so the existing `.cache/vllm/...` layout carries over and
+no cold re-tune is needed. What gets shadowed (`/root/.bashrc`, `.ssh`,
+`.local`, a 20 MB pip cache) is irrelevant at runtime - `/root/.local` is not
+on `sys.path`.
+
+**Accepted regressions.** Warm restart is slower (164 s vs ~46 s; upstream
+builds eight arches so there is more runtime JIT), and py-spy plus
+`dump-jam-state.sh` are absent, so incident triage has fewer tools.
+
+The fork remains useful for what it still uniquely provides - single-arch
+builds, reproducible digests via SOURCE_DATE_EPOCH, pinned CI, and the ops
+tooling - but it is not required to serve this model.
 
 ### The rebase hazard git cannot catch
 
