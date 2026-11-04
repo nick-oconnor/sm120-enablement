@@ -18,10 +18,12 @@ produced it is corrected below. The four fixes that retired upstream at the
 #57477 and #59504. 943 upstream commits moved under the branch; FlashInfer
 moved 0.7.0.post1 -> 0.7.2.post1.
 
-The fork image for this cut is still published as
-`ngpitt/vllm:0.33.0-sm120-cu130` (Docker Hub, 2026-11-03,
-`sha256:3d8e9cd0`) and remains a valid drop-in if the ops tooling or
-single-arch build is wanted; it is simply no longer what this rig runs.
+**No 0.33 fork image is published anywhere.** One was built and boot-verified
+(`sha256:3d8e9cd0`), but the tag was removed from the private registry and
+never mirrored to Docker Hub once the rig moved to the stock upstream image;
+the untagged digest will be garbage-collected. The newest published fork
+image remains `ngpitt/vllm:0.32.0-sm120-cu130`. Build the `0.33` branch from
+source if the ops tooling or single-arch build is wanted.
 
 ### Fork retired from production (2026-11-04)
 

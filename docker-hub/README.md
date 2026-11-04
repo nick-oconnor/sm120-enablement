@@ -33,22 +33,21 @@ for the per-release history.
 
 ## Image Contents
 
-- **vLLM** built from the `0.33` branch of
-  [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm), tagged
-  `0.33.0-sm120-cu130` (upstream `v0.33.0` release tag `3a4d82f569`).
-  GLM-5.3-Flash model support is native upstream since vllm-project #53906.
-  The branch still carries an SM120 NoPE sparse-MLA port, a kpool
-  index-width pin, an all-ranks warmup tune and a scheduler aligned-split
-  fix, but **all of them are redundant on v0.33.0** - they are retained only
-  so the branch history stays intact, and are verified to be no-ops against
-  stock upstream.
+- **vLLM**, newest published tag `0.32.0-sm120-cu130`, built from the `0.32`
+  branch of
+  [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm)
+  (upstream `v0.32.0` release tag `5df63a7203`). GLM-5.3-Flash model support
+  is native upstream since vllm-project #53906. **No 0.33 image is published
+  here**: by v0.33.0 every fork carry had become redundant, so the rig moved
+  to the stock upstream image rather than cutting another mirror. Build the
+  `0.33` branch from source if you want the tooling below on a newer base.
 - KV offloading is upstream native (`CPUOffloadingSpec`, scoped to
   prefix-cacheable groups), enabled in the quick start below.
 - **CUDA 13.0** runtime + toolchain: DeepGEMM is compiled in-image and
   TileLang builds from sdist; kernels the FlashInfer / CUTLASS wheels don't
   cover JIT at server startup, so `cuda-nvrtc-dev` ships in the runtime layer,
   not just the build layer
-- **FlashInfer 0.7.2.post1** via the `flashinfer-python` +
+- **FlashInfer 0.7.0.post1** via the `flashinfer-python` +
   `flashinfer-cubin` wheels from the flashinfer.ai index (upstream's own
   pin); autotune tactic sync and per-rank cache persistence across TP ranks
   are both upstream-native since 0.32 (vllm-project #57635)
@@ -108,7 +107,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1 \
-  ngpitt/vllm:0.33.0-sm120-cu130 \
+  ngpitt/vllm:0.32.0-sm120-cu130 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \
