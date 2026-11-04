@@ -1,63 +1,66 @@
 # vLLM for SM120
 
-Standalone [vLLM](https://github.com/nick-oconnor/vllm) inference image for the
-**single-outlet inference** setup documented in
+[vLLM](https://github.com/vllm-project/vllm) inference image tuned for
+**NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)**, serving
+**GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision) on the
+**single-outlet inference** rig documented in
 [sm120-enablement](https://github.com/nick-oconnor/sm120-enablement).
 
-Targets **NVIDIA Blackwell consumer GPUs (SM 12.0, RTX PRO 6000 Blackwell)**
-for serving **GLM-5.3-Flash** (sparse-MLA MoE, 1M context, native vision).
+## Do you need this image?
 
-> **Note:** as of 2026-11-04 the reference rig
-> ([sm120-enablement](https://github.com/nick-oconnor/sm120-enablement))
-> serves the *stock upstream* `vllm/vllm-openai:v0.33.0` instead - every fork
-> carry is redundant on v0.33.0. This image remains a valid drop-in and adds
-> single-arch builds, reproducible digests, py-spy and `dump-jam-state.sh`.
+**Probably not, as of vLLM 0.33.** Upstream `vllm/vllm-openai:v0.33.0` serves
+GLM-5.3-Flash on SM120 correctly on its own - FlashInfer now ships a native
+no-rope MLA kernel for this shape, upstream's default build already includes
+arch 12.0, and it has a native PCIe IPC all-reduce for TP>2 without NVLink.
+The reference rig switched to the stock upstream image on 2026-11-04.
+
+This image is still a drop-in replacement, and it adds:
+
+- **py-spy + `dump-jam-state.sh`** pre-installed for incident diagnostics
+  (dumps py-spy traces, `nvidia-smi`, and dmesg Xid lines) - the main reason
+  to prefer it
+- a **single-arch build** (`TORCH_CUDA_ARCH_LIST="12.0"`), which cuts build
+  time substantially; the resulting image is about the same size as upstream
+  (35.2 GB vs 35.4 GB) but does less runtime JIT, so restarts are faster
+  (~46 s vs ~164 s warm on the reference rig)
+- **reproducible digests** - `SOURCE_DATE_EPOCH` is pinned to the last commit
+  touching the build inputs, so an unchanged tree rebuilds to the same digest
+
+Earlier tags (0.29-0.32) carried fixes that were genuinely required before
+upstream absorbed them; see the
+[serving notes](https://github.com/nick-oconnor/sm120-enablement/blob/main/notes/serving-config.md)
+for the per-release history.
 
 ## Image Contents
 
 - **vLLM** built from the `0.33` branch of
   [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm), tagged
   `0.33.0-sm120-cu130` (upstream `v0.33.0` release tag `3a4d82f569`).
-  GLM-5.3-Flash model support is native upstream since vllm-project #53906;
-  no fork overlay is needed. The image carries, vs upstream:
-
-   - the SM120 NoPE sparse-MLA port (fp8 + FlashInfer zero-pad, backend
-     priority, indexer buffer pin)
-   - the b12x wheel install (upstream imports b12x but never installs it)
-   - the SM120 image build (Blackwell consumer)
-   - SM120 sparse-MLA warmup tunes all ranks; leader-only tuning left
-     asymmetric tuner state that deadlocked the synchronized autotune
-   - mamba aligned-split uses the scheduler-resolved block size;
-     `cache_config.block_size` gets reassigned to the smallest
-     prefix-cacheable group
-
-  Those four carries (#55222, #55601, #56531, #57635 - the last a superset
-  upstream that also fingerprints the per-rank cache files) retired at the
-  0.32 cut and remain upstream on 0.33, as does #59504 (async KV-load
-  zeroing). Upstream also ships its own `flashinfer_mla_sparse_sm120.py`
-  now, so the NoPE port is a delta on top of it. Upstream's #57477 (kpool
-  tail-seed stride fix for the silent KV-cache poisoning) is in the base. KV offloading is upstream native
-  (`CPUOffloadingSpec`, scoped to prefix-cacheable groups), enabled in the
-  quick start below.
-
+  GLM-5.3-Flash model support is native upstream since vllm-project #53906.
+  The branch still carries an SM120 NoPE sparse-MLA port, a kpool
+  index-width pin, an all-ranks warmup tune and a scheduler aligned-split
+  fix, but **all of them are redundant on v0.33.0** - they are retained only
+  so the branch history stays intact, and are verified to be no-ops against
+  stock upstream.
+- KV offloading is upstream native (`CPUOffloadingSpec`, scoped to
+  prefix-cacheable groups), enabled in the quick start below.
 - **CUDA 13.0** runtime + toolchain: DeepGEMM is compiled in-image and
   TileLang builds from sdist; kernels the FlashInfer / CUTLASS wheels don't
   cover JIT at server startup, so `cuda-nvrtc-dev` ships in the runtime layer,
   not just the build layer
-- **FlashInfer 0.7.0.post1** via the `flashinfer-python` +
+- **FlashInfer 0.7.2.post1** via the `flashinfer-python` +
   `flashinfer-cubin` wheels from the flashinfer.ai index (upstream's own
-  pin); autotune tactic sync across TP ranks is upstream-native, with
-  per-rank cache persistence carried on top
+  pin); autotune tactic sync and per-rank cache persistence across TP ranks
+  are both upstream-native since 0.32 (vllm-project #57635)
 - **CUTLASS** via the `nvidia-cutlass-dsl==4.7.1` PyPI wheel (SM120 GEMM
   kernels; upstream's requirement since the DSL 4.7 bump)
 - **b12x** via the `b12x==1.3.0` PyPI wheel: SM12x CuTe DSL kernels. Upstream
   imports b12x (modelopt_block_quant, kernel_warmup, fused_moe) but never
   installs it. Installed `--no-deps` so it cannot downgrade cutlass-dsl below
   the 4.7.1 upstream requires
-- **py-spy + `dump-jam-state.sh`** pre-installed for incident diagnostics
-  (dumps py-spy traces, `nvidia-smi`, and dmesg Xid lines)
-- `TORCH_CUDA_ARCH_LIST="12.0"`: only SM120 gets built, so the image is
-  smaller than the upstream `vllm/vllm` images that target every arch
+- `TORCH_CUDA_ARCH_LIST="12.0"`: only SM120 is built. Upstream's default
+  list already includes 12.0, so this is a build-time and startup-JIT
+  optimisation, not a capability difference
 
 ## Quick Start
 
