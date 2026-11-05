@@ -78,10 +78,10 @@ for the per-release history.
 - `--tensor-parallel-size 4`: 4-way TP across the four GPUs
 - `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
   1,068,443 tokens, 1.02x)
-- `--gpu-memory-utilization 0.644`: leaves ~25 GiB/GPU free; this rig shares
+- `--gpu-memory-utilization 0.65`: leaves ~25 GiB/GPU free; this rig shares
   two cards with an image-generation workload. Measured floor for the full 1M
   is 0.643; 0.642 lands 4,864 tokens short
-- `--compilation-config '{"cudagraph_mode": "FULL"}'`: **required.** Under
+- `--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'`: **required.** Under
   the upstream default `FULL_AND_PIECEWISE` the model emits token salad:
   `splitting_ops` is empty for this model, so "piecewise" captures the whole
   model for mixed prefill+decode batches, including the sparse-MLA prefill
@@ -116,8 +116,8 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.644 \
-      --compilation-config '{"cudagraph_mode": "FULL"}' \
+      --gpu-memory-utilization 0.65 \
+      --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
@@ -129,6 +129,5 @@ docker run --rm --gpus all --shm-size 120g \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
       --enable-auto-tool-choice \
-      --limit-mm-per-prompt '{"image": 999, "video": 0}' \
       --default-chat-template-kwargs '{"thinking": true}'
 ```

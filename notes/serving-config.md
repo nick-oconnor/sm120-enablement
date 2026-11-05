@@ -139,12 +139,98 @@ env flag?" - not by whether our symbols are absent.
 
 ### Flag deltas vs the 0.32 deploy
 
-None. gmu stays **0.644**, `cudagraph_mode: FULL` stays, MTP stays k=3,
-checkpoint still `nvidia/GLM-5.3-Flash-NVFP4`. Only the image digest moves.
+At the 0.33 cutover: none. gmu stayed 0.644, `cudagraph_mode: FULL`, MTP
+k=3, checkpoint `nvidia/GLM-5.3-Flash-NVFP4`; only the image digest moved.
+The gmu floor shifted 0.643 -> 0.642 (1,050,783 tokens), but that leaves
+only 2,207 tokens of headroom, so the deploy kept 0.644 (1,072,858, 2.3%
+margin). 0.641 lands 11,776 short.
 
-The gmu floor shifted 0.643 -> **0.642** (1,050,783 tokens) but that leaves
-only 2,207 tokens of headroom; 0.644 gives 1,072,858 (2.3% margin) for about
-0.2 GiB/GPU more, so the deploy stays at 0.644. 0.641 lands 11,776 short.
+**Superseded on 2026-11-05 - see "Video enabled" below.**
+
+### Video enabled; FULL_DECODE_ONLY; gmu 0.65 (2026-11-05)
+
+Three changes, measured together because each moves the memory budget:
+
+| flag | was | now |
+|---|---|---|
+| `--limit-mm-per-prompt` | `{"image": 999, "video": 0}` | *removed* |
+| `--compilation-config` | `{"cudagraph_mode": "FULL"}` | `{"cudagraph_mode": "FULL_DECODE_ONLY"}` |
+| `--gpu-memory-utilization` | 0.644 | **0.65** |
+
+**Video.** The `video: 0` in the limit flag was what blocked video input.
+With the flag gone vLLM applies the model's own defaults, and glm5next caps
+video encoding at `_MAX_VIDEO_TOKENS = 30000` specifically to stop encoder
+profiling starving the KV cache. The engine now reports `Encoder cache will
+be initialized with a budget of 32242 tokens, and profiled with 1 video
+items of the maximum feature size`. Verified end to end: a generated
+red->blue clip is described as "Red Blue". Dropping the explicit
+`image: 999` costs nothing - 600 images still go through (10,814 ptok), and
+500 x 512x512 encodes to 181,525 prompt tokens in 27.3 s.
+
+**FULL_DECODE_ONLY.** `FULL` was never actually in force. GDNAttentionBackend
+only supports `UNIFORM_BATCH`, so vLLM silently downgraded it and logged
+`CUDAGraphMode.FULL is not supported with GDNAttentionBackend ... setting
+cudagraph_mode=FULL_DECODE_ONLY` on every boot. Asking for the mode we
+already get makes the manifest honest and removes the warning. Because the
+effective mode is unchanged, the 2026-11-04 benchmarks below still apply.
+
+**gmu 0.65.** Measured with the new config: 0.644 falls 16,384 tokens short
+(auto-fit reduces to 1,032,192); 0.65 holds the full 1,048,576 with
+1,103,764 tokens of KV (1.05x, 5.3% margin).
+
+### Open: 100% GPU utilisation under heavy vision (2026-11-05, UNRESOLVED)
+
+Reported symptom: under heavy vision analysis the GPUs pin at 100%
+utilisation and stay there after the client cancels the session. vLLM keeps
+serving, more slowly. Restarting vLLM clears it.
+
+**Not reproduced.** On the deployed image with the production args, every
+attempt cleared to 0% immediately:
+
+| attempt | result |
+|---|---|
+| 50 x 1024x1024 (68,578 ptok) | 17.9 s, util -> 0% on completion |
+| 500 x 512x512 (181,525 ptok, 252 MB payload) | 27.3 s, util -> 0%, `Running: 0` |
+| 600 small images | accepted, no limit error |
+| cancel mid-generation (client killed 45 s into a 30,000-token generation) | util -> 0% **three seconds** after the kill |
+
+**Ruled out.**
+
+- *The PCIe IPC all-reduce*, for vision specifically: `should_use()` requires
+  `inp.shape[1] == hidden_dim` (4096, the text width) and
+  `workspace.supports(inp)`, where the workspace is sized from the cudagraph
+  capture sizes (`max_tokens=32`). Vision activations fail both gates and
+  fall back to NCCL, so the PCIe IPC path is not reached during encoding.
+- *The dropped fork carries*: all five touched attention, indexing, warmup or
+  scheduling. None goes near request lifecycle or the encoder.
+- *A host-level accounting artifact* was a separate, real problem and is
+  fixed: before the 2026-11-04 driver update and reboot, all four GPUs read
+  100% with **no processes and 2 MiB used**, and `nvidia-smi pmon` attributed
+  the time to nothing. That is gone post-reboot and was never vLLM.
+
+**Two inferences that turned out to be wrong - do not reuse them.**
+
+1. *"Sustained `Running: 3-4` means orphaned sessions."* The pod log that
+   suggested it contains 23 prefill events over 1270 s (one new request every
+   ~55 s) and never goes longer than 130 s without an arrival. It is ordinary
+   busy traffic, not stuck work, and does not contain the incident at all.
+2. *"Zero `Aborted request` lines means no cancellation reached vLLM."* False.
+   In the cancellation test the request demonstrably stopped - util fell
+   within 3 s, `Running` went to 0 - and **zero** abort lines were logged.
+   That line is not emitted on this path.
+
+**What would settle it.** During a live episode, `nvidia-smi pmon -c 5`. If
+SM% is attributed to the vLLM process it is real work and there is a leak to
+find; dashes mean it is the accounting artifact and vLLM is innocent. A pod
+log covering the episode, specifically whether `prompt throughput` drops to 0
+while `Running: N` stays pinned, would distinguish stuck work from load.
+
+Note that cancellation propagates correctly on a **direct** connection to the
+pod, which is consistent with (but does not prove) the disconnect being
+swallowed between client and pod in production. Note also that the upstream
+image ships no py-spy or `dump-jam-state.sh`, so a stack dump of a spinning
+worker - the one measurement that would answer this immediately - now needs
+py-spy installed into the pod or run from the host.
 
 ### Boot-verify (2026-11-02, NVFP4+MTP3, gmu 0.644)
 
@@ -250,7 +336,7 @@ page_block_size=2304 ... instantiated only for page_block_size=64`.
 
 ### `cudagraph_mode: FULL` is mandatory on 0.32
 
-Without `--compilation-config '{"cudagraph_mode": "FULL"}'` the build emits
+Without `--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'` the build emits
 token salad (`locklocklock...`) on a trivial prompt. Eager is clean, so it is
 a CUDA-graph issue, and the 0.31 image is correct on the same host, model and
 mount with an identical kernel stack (flashinfer 0.7.0.post1, torch
@@ -287,7 +373,7 @@ each; 0.32 is also faster on cold prefill).
 
 ### Flag deltas vs the 0.31 deploy
 
-`--compilation-config '{"cudagraph_mode": "FULL"}'` added (above), and
+`--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'` added (above), and
 `--gpu-memory-utilization` 0.655 -> **0.644**. The piecewise capture was
 charging a ~6.1 GiB "peak activation" reservation that cut auto-fit to
 732,672 tokens; with `FULL` the full 1M fits on far less, so the same 1M
@@ -313,8 +399,8 @@ vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
   --max-model-len auto \
   --max-num-seqs 4 \
   --max-num-batched-tokens 8192 \
-  --gpu-memory-utilization 0.644 \
-  --compilation-config '{"cudagraph_mode": "FULL"}' \
+  --gpu-memory-utilization 0.65 \
+  --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
   --moe-backend flashinfer_cutlass \
   --kv-cache-dtype fp8 \
   --enable-prefix-caching \
@@ -326,7 +412,6 @@ vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
   --tool-call-parser glm47 \
   --reasoning-parser glm45 \
   --enable-auto-tool-choice \
-  --limit-mm-per-prompt '{"image": 999, "video": 0}' \
   --default-chat-template-kwargs '{"thinking": true}'
 ```
 

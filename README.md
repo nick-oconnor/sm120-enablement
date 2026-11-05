@@ -90,8 +90,8 @@ a native PCIe IPC all-reduce for TP>2 without NVLink, and its default
 `torch_cuda_arch_list` already includes 12.0.
 
 Verified on the stock image with the production args: selects
-FLASHINFER_MLA_SPARSE_SM120 unaided, full 1M at gmu 0.644, needle found at
-1,035,329 prompt tokens, eviction 10/10, vision and tool calls correct, MTP
+FLASHINFER_MLA_SPARSE_SM120 unaided, full 1M context, needle found at
+1,035,329 prompt tokens, eviction 10/10, image/video/tool calls correct, MTP
 acceptance 61.2%, restart with no autotune deadlock. Full detail in
 [`notes/serving-config.md`](notes/serving-config.md).
 
@@ -142,17 +142,19 @@ Build constraints (either image):
 - `--tensor-parallel-size 4`: 4-way TP across the four GPUs
 - `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
   1,068,443 tokens, 1.02x)
-- `--gpu-memory-utilization 0.644`: leaves ~25 GiB/GPU free; this rig shares
+- `--gpu-memory-utilization 0.65`: leaves ~25 GiB/GPU free; this rig shares
   two cards with an image-generation workload. Measured floor for the full 1M
   is 0.642 (1,050,783 tokens, 0.2% margin); 0.641 lands 11,776 tokens short
-- `--compilation-config '{"cudagraph_mode": "FULL"}'`: **required on 0.32.**
+- `--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'`: **required on 0.32.**
   Under the upstream default `FULL_AND_PIECEWISE` the model emits token
   salad: with torch.compile off `splitting_ops` is empty, so "piecewise"
   captures the whole model for mixed prefill+decode batches, including the
-  sparse-MLA prefill path, which is not CUDA-graph safe. `FULL` captures only
-  uniform decode batches and falls back to eager for mixed ones, at no
-  measurable throughput cost. It also frees the ~6.1 GiB "peak activation"
-  the piecewise capture reserved, which is what lets gmu drop to 0.644
+  sparse-MLA prefill path, which is not CUDA-graph safe. Decode-only capture
+  avoids that and frees the large "peak activation" reservation the piecewise
+  path charges, which is what keeps the full 1M affordable. Ask for
+  `FULL_DECODE_ONLY` rather than `FULL`: GDNAttentionBackend only supports
+  `UNIFORM_BATCH`, so `FULL` is silently downgraded to exactly this with a
+  warning on every boot
 - `--moe-backend flashinfer_cutlass`: NVFP4 MoE; pinned, `auto` resolves
   here today but is free to drift
 - `--kv-offloading-size 100 --kv-offloading-backend native`: native CPU KV
@@ -182,8 +184,8 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.644 \
-      --compilation-config '{"cudagraph_mode": "FULL"}' \
+      --gpu-memory-utilization 0.65 \
+      --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
       --enable-prefix-caching \
@@ -195,7 +197,6 @@ docker run --rm --gpus all --shm-size 120g \
       --tool-call-parser glm47 \
       --reasoning-parser glm45 \
       --enable-auto-tool-choice \
-      --limit-mm-per-prompt '{"image": 999, "video": 0}' \
       --default-chat-template-kwargs '{"thinking": true}'
 ```
 
