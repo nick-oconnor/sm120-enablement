@@ -2,7 +2,7 @@
 
 A workstation serving [GLM-5.3-Flash](https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4)
 (sparse-MLA MoE with native vision, 1M-token context) with
-[vLLM](https://github.com/nick-oconnor/vllm).
+[vLLM](https://github.com/vllm-project/vllm).
 
 ![system](images/system.jpg)
 
@@ -77,22 +77,24 @@ show accuracy parity).
 
 ## vLLM Build
 
-**As of 2026-11-04 this rig serves the stock upstream image,
-`vllm/vllm-openai:v0.33.0`.** Every ocnr fork carry is redundant on v0.33.0,
-so no custom build is required to serve GLM-5.3-Flash on SM120.
+**As of 2026-11-17 this rig serves the stock upstream image,
+`vllm/vllm-openai:v0.34.0`.** Every ocnr fork carry is redundant, so no
+custom build is required to serve GLM-5.3-Flash on SM120.
 
-What changed upstream: FlashInfer now ships a native no-rope MLA kernel for
-exactly this shape (`qk_nope_head_dim=256`, `kv_lora_rank=512`), so the
-576-wide zero-pad the fork carried is unnecessary - and the kpool pool-drop,
-the index-width pin and the backend priority existed only to support that
-pad. Upstream also fixed the leader-only autotune asymmetry (#57635), gained
-a native PCIe IPC all-reduce for TP>2 without NVLink, and its default
-`torch_cuda_arch_list` already includes 12.0.
+What makes the stock image work: FlashInfer ships a native no-rope MLA
+kernel for exactly this shape (`qk_nope_head_dim=256`, `kv_lora_rank=512`),
+the default `torch_cuda_arch_list` already includes 12.0, and there is a
+native PCIe IPC all-reduce for TP>2 without NVLink. Since v0.34 the
+extensible KV cache (on by default) sizes KV from memory measured after
+warmup, and the 64-token default block is the native granularity of the
+SM120 sparse-MLA kernel.
 
-Verified on the stock image with the production args: selects
-FLASHINFER_MLA_SPARSE_SM120 unaided, full 1M context, needle found at
-1,035,329 prompt tokens, eviction 10/10, image/video/tool calls correct, MTP
-acceptance 61.2%, restart with no autotune deadlock. Full detail in
+On v0.33.0 the full production verification passed: backend selected
+unaided, full 1M context, needle at 1,035,329 prompt tokens, eviction 10/10,
+image/video/tool calls correct, MTP acceptance 61.2%, restart with no
+autotune deadlock. On v0.34.0: clean boot, backend selected unaided, full
+1M at gmu 0.7 (1,501,119 KV tokens, 1.43x), zero errors, serving
+production. Full detail in
 [`notes/serving-config.md`](notes/serving-config.md).
 
 Two things the stock image does not provide: py-spy and `dump-jam-state.sh`
@@ -140,21 +142,21 @@ Build constraints (either image):
   for decode-size collectives; the only AR path supporting TP>2 without
   NVLink, and ~27% faster than the b12x oneshot it replaced on 0.33
 - `--tensor-parallel-size 4`: 4-way TP across the four GPUs
-- `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
-  1,068,443 tokens, 1.02x)
-- `--gpu-memory-utilization 0.65`: leaves ~25 GiB/GPU free; this rig shares
-  two cards with an image-generation workload. Measured floor for the full 1M
-  is 0.642 (1,050,783 tokens, 0.2% margin); 0.641 lands 11,776 tokens short
-- `--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'`: **required on 0.32.**
-  Under the upstream default `FULL_AND_PIECEWISE` the model emits token
-  salad: with torch.compile off `splitting_ops` is empty, so "piecewise"
-  captures the whole model for mixed prefill+decode batches, including the
-  sparse-MLA prefill path, which is not CUDA-graph safe. Decode-only capture
-  avoids that and frees the large "peak activation" reservation the piecewise
-  path charges, which is what keeps the full 1M affordable. Ask for
-  `FULL_DECODE_ONLY` rather than `FULL`: GDNAttentionBackend only supports
-  `UNIFORM_BATCH`, so `FULL` is silently downgraded to exactly this with a
-  warning on every boot
+- `--max-model-len auto`: auto-fit; holds the full 1M (1,501,119 KV tokens,
+  1.43x)
+- `--gpu-memory-utilization 0.7`: leaves ~28 GiB/GPU free; this rig shares
+  two cards with an image-generation workload. Since v0.34 the extensible KV
+  cache sizes KV from memory measured after warmup, so the old estimate-based
+  floor no longer applies: 0.65 yields 764,802 tokens (short of the 1M
+  floor), 0.7 yields 1,501,119 (1.43x). `--kv-cache-memory=<bytes>` sets the
+  size absolutely if a fixed pool is preferred
+- `--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'`: under the
+  upstream default `FULL_AND_PIECEWISE` the piecewise capture charges a large
+  "peak activation" reservation that shrinks the KV pool, so decode-only
+  capture keeps the full 1M affordable. (The 0.32 token-salad bug that
+  originally forced this flag is fixed upstream.) GDNAttentionBackend only
+  supports `UNIFORM_BATCH`, so `FULL` would be silently downgraded to this
+  with a warning on every boot anyway
 - `--moe-backend flashinfer_cutlass`: NVFP4 MoE; pinned, `auto` resolves
   here today but is free to drift
 - `--kv-offloading-size 100 --kv-offloading-backend native`: native CPU KV
@@ -175,7 +177,7 @@ docker run --rm --gpus all --shm-size 120g \
   -e OMP_NUM_THREADS=4 \
   -e MAX_JOBS=32 \
   -e VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1 \
-  vllm/vllm-openai:v0.33.0 \
+  vllm/vllm-openai:v0.34.0 \
     /models/nvidia/GLM-5.3-Flash-NVFP4 \
       --served-model-name GLM-5.3-Flash \
       --tensor-parallel-size 4 \
@@ -184,7 +186,7 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.65 \
+      --gpu-memory-utilization 0.7 \
       --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \

@@ -1,10 +1,10 @@
 # Serving config & fixes: SM120 single-outlet inference
 
-## GLM-5.3-Flash NVFP4 + MTP3: current (2026-11-04)
+## GLM-5.3-Flash NVFP4 + MTP3: current (2026-11-17)
 
 Deployed via k8s-gitops `stage3/inference/vllm.yaml`; image
-**`vllm/vllm-openai:v0.33.0@sha256:d825baf9`** - the *stock upstream image*,
-as of 2026-11-04. The ocnr fork is no longer deployed; see "Fork retired
+**`vllm/vllm-openai:v0.34.0@sha256:20fdb089`** - the *stock upstream image*,
+as of 2026-11-17. The ocnr fork is no longer deployed; see "Fork retired
 from production" below. Historically this ran the `0.33` branch cut on the
 upstream **`v0.33.0` release tag** (`3a4d82f569`, 2026-10-31), not
 upstream main (the release branch carries its own cherry-picks, so fix
@@ -177,6 +177,54 @@ effective mode is unchanged, the 2026-11-04 benchmarks below still apply.
 **gmu 0.65.** Measured with the new config: 0.644 falls 16,384 tokens short
 (auto-fit reduces to 1,032,192); 0.65 holds the full 1,048,576 with
 1,103,764 tokens of KV (1.05x, 5.3% margin).
+
+### v0.34.0 cutover; extensible KV cache; gmu 0.7 (2026-11-17)
+
+Image `vllm/vllm-openai:v0.33.0@sha256:d825baf9...84c6e` ->
+`v0.34.0@sha256:20fdb089...1ce1`; gmu 0.65 -> **0.7**; no other flag delta
+(`--no-enable-extensible-kv-cache` was tried and reverted, below). The
+checkpoint itself was also re-synced the same day: upstream replaced 44 of
+44 files (~190 GiB, effectively a new quantization build), pulled by
+hf-model-manager on both instances (4 entries, 0 failures each).
+
+**Extensible KV cache is default-on in 0.34** and changes the memory model:
+KV is sized from memory *measured after* CUDA-graph capture and warmup,
+subtracted from the gmu budget, instead of the pre-capture estimate the
+0.33 sizing used. The gmu stays a hard cap. Measured on this rig:
+
+| gmu | sizing | KV tokens | full 1M? |
+|---|---|---|---|
+| 0.65 | extensible (0.34 default) | 764,802 | no (-283,774) |
+| 0.65 | disabled (0.33 estimate path) | 1,379,705 | yes, 1.32x |
+| 0.72 | extensible | 1,792,513 | yes, 1.71x |
+| **0.7** | **extensible (deployed)** | **1,501,119** | **yes, 1.43x** |
+
+The 0.33-era floor (0.642/0.643 for the full 1M) is obsolete under
+extensible sizing: 0.65 sits 27% short. The measured floor is somewhere
+below 0.7 and above 0.65; 0.7 was chosen for margin, not as the floor.
+`--kv-cache-memory=<bytes>` is the absolute-size alternative (vLLM logs the
+exact suggestion at startup: "Replace gpu_memory_utilization config with
+`--kv-cache-memory=...`"); it ignores gmu entirely, so an over-set value
+OOMs where the cap would have protected. `--no-enable-extensible-kv-cache`
+restores the 0.33 estimate path (1,379,705 tokens at 0.65) - the flag does
+not exist in 0.33, so it can only land with the 0.34 image.
+
+Two upstream changes make the extensible numbers larger than the first
+pass suggested: #66197 stops reserving the one-off FlashInfer autotune peak
+as a serving transient (we run `flashinfer_cutlass`, so autotune runs), and
+#65198 makes the MTP draft KV cache match the target dtype (fp8 here,
+instead of bf16). The 64-token default `--block-size` is the native
+granularity of `FLASHINFER_MLA_SPARSE_SM120` (kernel page size
+`MultipleOf(64)`), so the default change from 16 is favorable, not a risk.
+
+**Boot-verify (2026-11-17, 20fdb089, NVFP4+MTP3, gmu 0.7, updated
+checkpoint).** Backend `FLASHINFER_MLA_SPARSE_SM120` + MoE
+`FLASHINFER_CUTLASS` selected unaided; auto-fit "full model context length
+1048576 fits"; weights 49.3 GiB/GPU in ~101-108s; KV 1,501,119 tokens
+(1.43x); zero ERROR/traceback lines; serving production. Not yet re-verified
+on 0.34: needle/eviction/vision/tool-call probes, MTP acceptance, warm
+restart, and the c=1 benchmark table (README still carries the 2026-11-04
+v0.33.0 bench).
 
 ### Open: 100% GPU utilisation under heavy vision (2026-11-05, UNRESOLVED)
 
@@ -399,7 +447,7 @@ vllm serve /models/nvidia/GLM-5.3-Flash-NVFP4 \
   --max-model-len auto \
   --max-num-seqs 4 \
   --max-num-batched-tokens 8192 \
-  --gpu-memory-utilization 0.65 \
+  --gpu-memory-utilization 0.7 \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
   --moe-backend flashinfer_cutlass \
   --kv-cache-dtype fp8 \
@@ -724,6 +772,14 @@ serving 200 OKs. No new bench run; the image content is identical to the
 `87feab60` build.
 
 ### Checkpoint prerequisite (host-side, not in git)
+
+**Obsolete as of the 2026-11-17 checkpoint re-sync.** Upstream's updated
+`hf_quant_config.json` ships an `exclude_modules` list (new schema key,
+replacing `ignore`) that already contains both layer-45 spellings
+(`model.language_model.layers.45*` and `model.layers.45*`), and vLLM 0.34
+boots clean on it with MTP3 - zero errors, no size-mismatch. The re-sync
+overwrote the local edit and nothing broke. Kept below for older
+checkpoint generations.
 
 NVIDIA ships the MTP module (layer 45) in bf16 (no `weight_scale` tensors,
 while every real layer has them), but omits it from `hf_quant_config.json`'s

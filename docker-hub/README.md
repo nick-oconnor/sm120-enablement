@@ -8,11 +8,12 @@
 
 ## Do you need this image?
 
-**Probably not, as of vLLM 0.33.** Upstream `vllm/vllm-openai:v0.33.0` serves
-GLM-5.3-Flash on SM120 correctly on its own - FlashInfer now ships a native
+**Probably not, as of vLLM 0.34.** Upstream `vllm/vllm-openai:v0.34.0` serves
+GLM-5.3-Flash on SM120 correctly on its own - FlashInfer ships a native
 no-rope MLA kernel for this shape, upstream's default build already includes
 arch 12.0, and it has a native PCIe IPC all-reduce for TP>2 without NVLink.
-The reference rig switched to the stock upstream image on 2026-11-04.
+The reference rig switched to the stock upstream image on 2026-11-04 and is
+on v0.34.0 today.
 
 This image is still a drop-in replacement, and it adds:
 
@@ -37,10 +38,11 @@ for the per-release history.
   branch of
   [github.com/nick-oconnor/vllm](https://github.com/nick-oconnor/vllm)
   (upstream `v0.32.0` release tag `5df63a7203`). GLM-5.3-Flash model support
-  is native upstream since vllm-project #53906. **No 0.33 image is published
-  here**: by v0.33.0 every fork carry had become redundant, so the rig moved
-  to the stock upstream image rather than cutting another mirror. Build the
-  `0.33` branch from source if you want the tooling below on a newer base.
+  is native upstream since vllm-project #53906. **No image is published here
+  for 0.33 or 0.34**: by v0.33.0 every fork carry had become redundant, so
+  the rig moved to the stock upstream image rather than cutting another
+  mirror. Build the `0.33` branch from source if you want the tooling below
+  on a newer base.
 - KV offloading is upstream native (`CPUOffloadingSpec`, scoped to
   prefix-cacheable groups), enabled in the quick start below.
 - **CUDA 13.0** runtime + toolchain: DeepGEMM is compiled in-image and
@@ -76,13 +78,14 @@ for the per-release history.
   for decode-size collectives; the only AR path supporting TP>2 without
   NVLink, and ~27% faster than the b12x oneshot it replaced on 0.33
 - `--tensor-parallel-size 4`: 4-way TP across the four GPUs
-- `--max-model-len auto`: auto-fit; holds the full 1M (8.75 GiB KV /
-  1,068,443 tokens, 1.02x)
-- `--gpu-memory-utilization 0.65`: leaves ~25 GiB/GPU free; this rig shares
-  two cards with an image-generation workload. Measured floor for the full 1M
-  is 0.643; 0.642 lands 4,864 tokens short
-- `--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'`: **required.** Under
-  the upstream default `FULL_AND_PIECEWISE` the model emits token salad:
+- `--max-model-len auto`: auto-fit; holds the full 1M with headroom
+  (1,068,443 KV tokens at gmu 0.644; ~1.25M at 0.7)
+- `--gpu-memory-utilization 0.7`: leaves ~28 GiB/GPU free; the reference rig
+  shares two cards with an image-generation workload. KV scales ~11,600
+  tokens per 0.001 gmu on this image; 0.642 is the measured floor for the
+  full 1M
+- `--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}'`: **required.**
+  Under the upstream default `FULL_AND_PIECEWISE` the model emits token salad:
   `splitting_ops` is empty for this model, so "piecewise" captures the whole
   model for mixed prefill+decode batches, including the sparse-MLA prefill
   path, which is not CUDA-graph safe. `FULL` captures only uniform decode
@@ -116,7 +119,7 @@ docker run --rm --gpus all --shm-size 120g \
       --max-model-len auto \
       --max-num-seqs 4 \
       --max-num-batched-tokens 8192 \
-      --gpu-memory-utilization 0.65 \
+      --gpu-memory-utilization 0.7 \
       --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
       --moe-backend flashinfer_cutlass \
       --kv-cache-dtype fp8 \
