@@ -222,9 +222,44 @@ checkpoint).** Backend `FLASHINFER_MLA_SPARSE_SM120` + MoE
 `FLASHINFER_CUTLASS` selected unaided; auto-fit "full model context length
 1048576 fits"; weights 49.3 GiB/GPU in ~101-108s; KV 1,501,119 tokens
 (1.43x); zero ERROR/traceback lines; serving production. Not yet re-verified
-on 0.34: needle/eviction/vision/tool-call probes, MTP acceptance, warm
-restart, and the c=1 benchmark table (README still carries the 2026-11-04
-v0.33.0 bench).
+on 0.34: needle/eviction/vision/tool-call probes and warm restart.
+
+### Benchmarks (2026-11-18, stock upstream image v0.34.0, NVFP4+MTP3, gmu 0.7, offload on, extensible KV, FlashInfer PCIe IPC all-reduce; c=1, 16 prompts per cell, zero failures)
+
+`vllm bench serve` from the in-cluster `vllm-bench` job against the live
+deployment (`http://vllm.inference.svc.cluster.local`), job
+`vllm-bench-manual-spawn-51ry2uqy` (pod `-b29l4`), 08:02-08:27 UTC, ~15
+hours after the 0.34 rollout, on the updated 2026-11-17 checkpoint.
+Tokenizer passed explicitly (`--tokenizer
+/models/nvidia/GLM-5.3-Flash-NVFP4`).
+
+| Input | Output | Decode (tok/s) | Median TTFT | Median ITL | Median TPOT | Accept len | Accept rate |
+|---|---|---|---|---|---|---|---|
+| 2048 | 256 | 158.10 | 239.26ms | 12.96ms | 5.34 | 2.42 | 47.21% |
+| 8192 | 1024 | 150.60 | 770.07ms | 13.06ms | 6.04 | 2.26 | 41.98% |
+| 32768 | 4096 | 163.37 | 2274.06ms | 13.10ms | 5.63 | 2.35 | 45.13% |
+| 131072 | 8192 | 151.87 | 9478.46ms | 13.31ms | 5.55 | 2.45 | 48.28% |
+
+Per-position MTP acceptance across lengths: position 0 64-70%, position 1
+39-46%, position 2 23-31%.
+
+Cold prefill rates (input/TTFT): ~8.6K tok/s at 2K, 10.6K at 8K, 14.4K at
+32K, 13.8K at 128K.
+
+PSU over the window: 474W in-window floor (bench setup seconds; the bench
+started 90s after comfyui hit zero, so no true idle reading exists this
+run), 1.37kW median, 1.72kW peak.
+
+**Benign warning to expect.** Every cell logs, twice, before running:
+
+```
+Error parsing config for /models/nvidia/GLM-5.3-Flash-NVFP4: Unrecognized
+model in ... Should have a `model_type` key in its config.json.
+```
+
+Same signature as the 2026-11-04 note: structural and harmless; the bench
+client retries twice, then falls through to the explicit `--tokenizer`
+path. Zero failed requests in all four cells.
 
 ### Open: 100% GPU utilisation under heavy vision (2026-11-05, UNRESOLVED)
 
